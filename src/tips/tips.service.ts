@@ -52,10 +52,15 @@ export class TipsService {
       return [];
     }
 
-    // 3. Analyze each fixture (throttling requests to stay within API rate limits)
+    // 3. Filter for upcoming matches (Not Started) or scheduled later today
+    const upcomingFixtures = fixtures.filter(
+      (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
+    );
+    const targetFixtures =
+      upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
+
     const allCandidates: CandidateTip[] = [];
-    // Process up to 15 top fixtures to conserve daily API quota
-    const sampleFixtures = fixtures.slice(0, 15);
+    const sampleFixtures = targetFixtures.slice(0, 15);
 
     for (const fixture of sampleFixtures) {
       try {
