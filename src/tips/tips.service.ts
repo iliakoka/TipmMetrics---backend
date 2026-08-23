@@ -196,21 +196,30 @@ export class TipsService {
   }
 
   /**
-   * Get Today's tips for public or authenticated user
+   * Get Active / Today's tips for the Tips page
    */
   async getTodayTips(): Promise<Tip[]> {
-    const today = new Date().toISOString().split('T')[0];
-    const startOfDay = new Date(`${today}T00:00:00.000Z`);
-    const endOfDay = new Date(`${today}T23:59:59.999Z`);
-
+    // 1. Look for active pending tips first (upcoming games to follow)
     let tips = await this.tipRepository.find({
-      where: { matchDate: Between(startOfDay, endOfDay) },
-      order: { isFree: 'DESC', confidenceScore: 'DESC' },
+      where: { result: TipResult.PENDING },
+      order: { matchDate: 'ASC', isFree: 'DESC', confidenceScore: 'DESC' },
     });
 
+    // 2. If no pending tips, check today's date window
     if (tips.length === 0) {
-      // Auto-trigger generation if none exists
-      tips = await this.generateDailyTips(today);
+      const today = new Date().toISOString().split('T')[0];
+      const startOfDay = new Date(`${today}T00:00:00.000Z`);
+      const endOfDay = new Date(`${today}T23:59:59.999Z`);
+
+      tips = await this.tipRepository.find({
+        where: { matchDate: Between(startOfDay, endOfDay) },
+        order: { isFree: 'DESC', confidenceScore: 'DESC' },
+      });
+
+      // 3. Auto-trigger generation if none exists at all
+      if (tips.length === 0) {
+        tips = await this.generateDailyTips(today);
+      }
     }
 
     return tips;
