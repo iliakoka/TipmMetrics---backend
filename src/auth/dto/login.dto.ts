@@ -1,8 +1,8 @@
-import { IsEmail, IsString } from 'class-validator';
+import { IsString } from 'class-validator';
 
 export class LoginDto {
-  @IsEmail({}, { message: 'Please provide a valid email address' })
-  email: string;
+  @IsString()
+  identifier: string; // accepts email OR username
 
   @IsString()
   password: string;

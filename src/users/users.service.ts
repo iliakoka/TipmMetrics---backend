@@ -14,17 +14,27 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { email } });
   }
 
+  async findByUsername(username: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { username } });
+  }
+
+  async findById(id: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { id } });
+  }
+
   async findByVerificationToken(token: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { verificationToken: token } });
   }
 
   async create(
     email: string,
+    username: string,
     hashedPassword: string,
     verificationToken: string,
   ): Promise<User> {
     const user = this.usersRepository.create({
       email,
+      username,
       password: hashedPassword,
       verificationToken,
       isVerified: false,

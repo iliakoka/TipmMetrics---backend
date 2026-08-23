@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -24,9 +25,14 @@ export class AuthService {
       throw new BadRequestException('Passwords do not match');
     }
 
-    const existing = await this.usersService.findByEmail(dto.email);
-    if (existing) {
+    const existingEmail = await this.usersService.findByEmail(dto.email);
+    if (existingEmail) {
       throw new BadRequestException('An account with this email already exists');
+    }
+
+    const existingUsername = await this.usersService.findByUsername(dto.username);
+    if (existingUsername) {
+      throw new BadRequestException('This username is already taken');
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
@@ -34,6 +40,7 @@ export class AuthService {
 
     const user = await this.usersService.create(
       dto.email,
+      dto.username,
       hashedPassword,
       verificationToken,
     );
@@ -63,14 +70,19 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.usersService.findByEmail(dto.email);
+    // Find user by email or username
+    const isEmail = dto.identifier.includes('@');
+    const user = isEmail
+      ? await this.usersService.findByEmail(dto.identifier)
+      : await this.usersService.findByUsername(dto.identifier);
+
     if (!user) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException('Invalid credentials');
     }
 
     const passwordMatch = await bcrypt.compare(dto.password, user.password);
     if (!passwordMatch) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException('Invalid credentials');
     }
 
     if (!user.isVerified) {
@@ -79,9 +91,24 @@ export class AuthService {
       );
     }
 
-    const payload = { sub: user.id, email: user.email };
+    const payload = { sub: user.id, email: user.email, username: user.username };
     const accessToken = this.jwtService.sign(payload);
 
     return { accessToken };
+  }
+
+  async getMe(userId: string) {
+    const user = await this.usersService.findById(userId);
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      isVerified: user.isVerified,
+      createdAt: user.createdAt,
+    };
   }
 }
