@@ -11,6 +11,8 @@ import { UsersService } from '../users/users.service';
 import { MailService } from '../mail/mail.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -110,5 +112,42 @@ export class AuthService {
       isVerified: user.isVerified,
       createdAt: user.createdAt,
     };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.usersService.findByEmail(dto.email);
+
+    // Always return the same message — don't reveal if email exists
+    if (!user) {
+      return { message: 'If this email is registered, a reset link has been sent.' };
+    }
+
+    const resetToken = uuidv4();
+    const expiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+
+    await this.usersService.setResetToken(user, resetToken, expiry);
+    await this.mailService.sendPasswordResetEmail(user.email, resetToken);
+
+    return { message: 'If this email is registered, a reset link has been sent.' };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    if (dto.password !== dto.confirmPassword) {
+      throw new BadRequestException('Passwords do not match');
+    }
+
+    const user = await this.usersService.findByResetToken(dto.token);
+    if (!user) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    if (!user.resetPasswordExpiry || user.resetPasswordExpiry < new Date()) {
+      throw new BadRequestException('Reset token has expired. Please request a new one.');
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+    await this.usersService.updatePassword(user, hashedPassword);
+
+    return { message: 'Password reset successfully! You can now log in.' };
   }
 }

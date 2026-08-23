@@ -20,6 +20,12 @@ export class User {
   @Column({ nullable: true, type: 'varchar' })
   verificationToken: string | null;
 
+  @Column({ nullable: true, type: 'varchar' })
+  resetPasswordToken: string | null;
+
+  @Column({ nullable: true, type: 'timestamptz' })
+  resetPasswordExpiry: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 }

@@ -47,4 +47,21 @@ export class UsersService {
     user.verificationToken = null;
     return this.usersRepository.save(user);
   }
+
+  async setResetToken(user: User, token: string, expiry: Date): Promise<User> {
+    user.resetPasswordToken = token;
+    user.resetPasswordExpiry = expiry;
+    return this.usersRepository.save(user);
+  }
+
+  async findByResetToken(token: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { resetPasswordToken: token } });
+  }
+
+  async updatePassword(user: User, hashedPassword: string): Promise<User> {
+    user.password = hashedPassword;
+    user.resetPasswordToken = null;
+    user.resetPasswordExpiry = null;
+    return this.usersRepository.save(user);
+  }
 }
