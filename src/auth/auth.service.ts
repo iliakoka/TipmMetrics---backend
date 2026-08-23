@@ -38,6 +38,7 @@ export class AuthService {
       verificationToken,
     );
 
+    // Send confirmation email — must succeed for registration to complete
     await this.mailService.sendVerificationEmail(user.email, verificationToken);
 
     return {

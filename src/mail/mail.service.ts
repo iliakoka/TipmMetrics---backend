@@ -1,32 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 @Injectable()
 export class MailService {
-  private transporter: nodemailer.Transporter;
+  private resend: Resend;
 
   constructor(private configService: ConfigService) {
-    this.transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false, // STARTTLS
-      auth: {
-        user: this.configService.get<string>('MAIL_USER'),
-        pass: this.configService.get<string>('MAIL_PASS'),
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-    });
+    this.resend = new Resend(this.configService.get<string>('RESEND_API_KEY'));
   }
 
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const appUrl = this.configService.get<string>('APP_URL');
     const verificationUrl = `${appUrl}/auth/verify-email?token=${token}`;
 
-    await this.transporter.sendMail({
-      from: `"TipMetrics" <${this.configService.get<string>('MAIL_USER')}>`,
+    await this.resend.emails.send({
+      from: 'TipMetrics <onboarding@resend.dev>',
       to: email,
       subject: 'Confirm your TipMetrics account',
       html: `
