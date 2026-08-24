@@ -290,35 +290,21 @@ export class PredictionEngineService {
   }
 
   /**
-   * Select top distinct tips with diverse markets and highest confidence
+   * Select top distinct tips purely ranked by highest mathematical confidence and accuracy
    */
   selectDailyTips(candidates: CandidateTip[], targetCount = 6): CandidateTip[] {
+    // Sort strictly by highest confidence score
     candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
 
     const selected: CandidateTip[] = [];
     const usedFixtureIds = new Set<string>();
-    const marketCounts: Record<string, number> = {};
 
-    // Max 2 tips of the same market type to guarantee diversity
     for (const cand of candidates) {
-      const currentMarketCount = marketCounts[cand.market] || 0;
-      if (!usedFixtureIds.has(cand.fixture.id) && currentMarketCount < 2) {
+      if (!usedFixtureIds.has(cand.fixture.id)) {
         selected.push(cand);
         usedFixtureIds.add(cand.fixture.id);
-        marketCounts[cand.market] = currentMarketCount + 1;
 
         if (selected.length >= targetCount) break;
-      }
-    }
-
-    // Fill remaining if needed
-    if (selected.length < targetCount) {
-      for (const cand of candidates) {
-        if (!usedFixtureIds.has(cand.fixture.id)) {
-          selected.push(cand);
-          usedFixtureIds.add(cand.fixture.id);
-          if (selected.length >= targetCount) break;
-        }
       }
     }
 
