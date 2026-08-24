@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import axios, { AxiosInstance } from 'axios';
 import { Fixture } from '../fixtures/fixture.entity';
 
-// Top leagues to track for high-quality data
+// Top international and domestic first-tier leagues
 export const TARGET_LEAGUES = [
   { id: 39, name: 'Premier League', country: 'England' },
   { id: 140, name: 'La Liga', country: 'Spain' },
@@ -21,6 +21,17 @@ export const TARGET_LEAGUES = [
   { id: 144, name: 'Jupiler Pro League', country: 'Belgium' },
   { id: 179, name: 'Premiership', country: 'Scotland' },
   { id: 203, name: 'Süper Lig', country: 'Turkey' },
+  { id: 128, name: 'Liga Profesional Argentina', country: 'Argentina' },
+  { id: 71, name: 'Serie A', country: 'Brazil' },
+  { id: 262, name: 'Liga MX', country: 'Mexico' },
+  { id: 253, name: 'Major League Soccer', country: 'USA' },
+  { id: 239, name: 'Primera A', country: 'Colombia' },
+  { id: 242, name: 'Liga Pro', country: 'Ecuador' },
+  { id: 162, name: 'Primera División', country: 'Costa-Rica' },
+  { id: 113, name: 'Allsvenskan', country: 'Sweden' },
+  { id: 103, name: 'Eliteserien', country: 'Norway' },
+  { id: 119, name: 'Superliga', country: 'Denmark' },
+  { id: 207, name: 'Super League', country: 'Switzerland' },
 ];
 
 @Injectable()
@@ -28,7 +39,7 @@ export class FootballDataService {
   private readonly logger = new Logger(FootballDataService.name);
   private client: AxiosInstance;
 
-  // In-memory caches to respect rate limits and conserve quota
+  // In-memory caches to strictly respect rate limits and conserve quota
   private statsCache = new Map<string, any>();
   private h2hCache = new Map<string, any[]>();
   private oddsCache = new Map<number, any>();
@@ -72,7 +83,8 @@ export class FootballDataService {
         const leagueId = item.league?.id;
         const isTargetLeague = TARGET_LEAGUES.some((l) => l.id === leagueId);
 
-        if (!isTargetLeague && rawFixtures.length > 30) {
+        // Prioritize target leagues, or accept any first-tier match if target list is sparse on weekdays
+        if (!isTargetLeague && rawFixtures.length > 50) {
           continue;
         }
 
