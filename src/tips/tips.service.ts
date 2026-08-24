@@ -5,6 +5,8 @@ import { Tip, TipResult } from './tip.entity';
 import { Fixture } from '../fixtures/fixture.entity';
 import { FootballDataService } from '../football-data/football-data.service';
 import { PredictionEngineService, CandidateTip } from '../analytics/prediction-engine.service';
+import { BasketballDataService } from '../basketball/basketball-data.service';
+import { BasketballPredictionEngineService } from '../basketball/basketball-prediction-engine.service';
 
 @Injectable()
 export class TipsService {
@@ -17,6 +19,8 @@ export class TipsService {
     private fixtureRepository: Repository<Fixture>,
     private footballDataService: FootballDataService,
     private predictionEngineService: PredictionEngineService,
+    private basketballDataService: BasketballDataService,
+    private basketballPredictionEngineService: BasketballPredictionEngineService,
   ) {}
 
   /**
@@ -120,7 +124,52 @@ export class TipsService {
       }
     }
 
-    // 4. Select top 5-7 tips
+    // 4. Ingest and Analyze Basketball Games
+    try {
+      const basketballGames =
+        await this.basketballDataService.getGamesForDate(dateStr);
+      for (const game of basketballGames.slice(0, 8)) {
+        if (
+          game.status?.short !== 'NS' &&
+          new Date(game.date) < new Date()
+        ) {
+          continue;
+        }
+
+        let bFixture = await this.fixtureRepository.findOne({
+          where: { apiFixtureId: game.id },
+        });
+
+        if (!bFixture) {
+          bFixture = this.fixtureRepository.create({
+            apiFixtureId: game.id,
+            leagueId: game.league?.id || 0,
+            leagueName: `🏀 ${game.league?.name || 'Basketball'}`,
+            leagueCountry: game.country?.name || '',
+            homeTeamId: game.teams?.home?.id || 0,
+            homeTeamName: game.teams?.home?.name || 'Home Team',
+            awayTeamId: game.teams?.away?.id || 0,
+            awayTeamName: game.teams?.away?.name || 'Away Team',
+            matchDate: new Date(game.date),
+            status: game.status?.short || 'NS',
+          });
+          bFixture = await this.fixtureRepository.save(bFixture);
+        }
+
+        const odds = await this.basketballDataService.getOddsForGame(game.id);
+        const bCandidates =
+          this.basketballPredictionEngineService.analyzeGame(game, odds);
+
+        for (const bc of bCandidates) {
+          bc.fixture = bFixture;
+          allCandidates.push(bc);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Could not analyze basketball games: ${err.message}`);
+    }
+
+    // 5. Select top 5-7 tips
     const selected = this.predictionEngineService.selectDailyTips(
       allCandidates,
       6,

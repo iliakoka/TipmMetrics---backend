@@ -6,6 +6,7 @@ import { AppService } from './app.service';
 import { FreeTipModule } from './free-tip/free-tip.module';
 import { AuthModule } from './auth/auth.module';
 import { FootballDataModule } from './football-data/football-data.module';
+import { BasketballModule } from './basketball/basketball.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { TipsModule } from './tips/tips.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
@@ -31,6 +32,7 @@ import { Tip } from './tips/tip.entity';
     FreeTipModule,
     AuthModule,
     FootballDataModule,
+    BasketballModule,
     AnalyticsModule,
     TipsModule,
     SchedulerModule,
