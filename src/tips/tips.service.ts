@@ -64,71 +64,77 @@ export class TipsService {
       }
     }
 
-    // 2. Fetch fixtures for today
-    const fixtures =
-      await this.footballDataService.syncFixturesForDate(dateStr);
-    if (!fixtures || fixtures.length === 0) {
-      this.logger.warn(`No fixtures found for ${dateStr}`);
-      return [];
-    }
-
-    // 3. Filter for upcoming matches (Not Started) or scheduled later today
-    const upcomingFixtures = fixtures.filter(
-      (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
-    );
-    const targetFixtures =
-      upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
-
     const allCandidates: CandidateTip[] = [];
-    const sampleFixtures = targetFixtures.slice(0, 25);
 
-    for (const fixture of sampleFixtures) {
-      try {
-        const [homeStats, awayStats, h2h, odds] = await Promise.all([
-          this.footballDataService.getTeamStats(
-            fixture.homeTeamId,
-            fixture.leagueId,
-          ),
-          this.footballDataService.getTeamStats(
-            fixture.awayTeamId,
-            fixture.leagueId,
-          ),
-          this.footballDataService.getH2H(
-            fixture.homeTeamId,
-            fixture.awayTeamId,
-          ),
-          this.footballDataService.getOddsForFixture(fixture.apiFixtureId),
-        ]);
-
-        const candidates = this.predictionEngineService.analyzeFixture(
-          fixture,
-          homeStats,
-          awayStats,
-          h2h,
-          odds,
-        );
-
-        allCandidates.push(...candidates);
-
-        // Once we have 10+ verified high-confidence candidates, stop querying to save quota
-        if (allCandidates.length >= 12) {
-          break;
-        }
-
-        // Small throttle to stay smoothly within API rate limits
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } catch (err) {
-        this.logger.error(
-          `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
-        );
+    // 2. Process Football Fixtures (if quota available, or fallback to saved database fixtures)
+    try {
+      let fixtures = await this.footballDataService.syncFixturesForDate(dateStr);
+      if (!fixtures || fixtures.length === 0) {
+        fixtures = await this.fixtureRepository.find({
+          where: { matchDate: Between(startOfDay, endOfDay) },
+        });
       }
+
+      if (fixtures && fixtures.length > 0) {
+        const upcomingFixtures = fixtures.filter(
+          (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
+        );
+        const targetFixtures =
+          upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
+
+        const sampleFixtures = targetFixtures.slice(0, 25);
+
+        for (const fixture of sampleFixtures) {
+          try {
+            const [homeStats, awayStats, h2h, odds] = await Promise.all([
+              this.footballDataService.getTeamStats(
+                fixture.homeTeamId,
+                fixture.leagueId,
+              ),
+              this.footballDataService.getTeamStats(
+                fixture.awayTeamId,
+                fixture.leagueId,
+              ),
+              this.footballDataService.getH2H(
+                fixture.homeTeamId,
+                fixture.awayTeamId,
+              ),
+              this.footballDataService.getOddsForFixture(fixture.apiFixtureId),
+            ]);
+
+            const candidates = this.predictionEngineService.analyzeFixture(
+              fixture,
+              homeStats,
+              awayStats,
+              h2h,
+              odds,
+            );
+
+            allCandidates.push(...candidates);
+
+            // Once we have 10+ verified high-confidence candidates, stop querying to save quota
+            if (allCandidates.length >= 12) {
+              break;
+            }
+
+            // Small throttle to stay smoothly within API rate limits
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } catch (err) {
+            this.logger.error(
+              `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Football processing skipped: ${err.message}`);
     }
 
-    // 4. Ingest and Analyze Basketball Games
+    // 3. Ingest and Analyze Basketball Games (Independent Quota!)
     try {
       const basketballGames =
         await this.basketballDataService.getGamesForDate(dateStr);
-      for (const game of basketballGames.slice(0, 8)) {
+      for (const game of basketballGames.slice(0, 10)) {
         if (
           game.status?.short !== 'NS' &&
           new Date(game.date) < new Date()
@@ -169,7 +175,7 @@ export class TipsService {
       this.logger.warn(`Could not analyze basketball games: ${err.message}`);
     }
 
-    // 5. Select top 5-7 tips
+    // 4. Select top 5-7 tips
     const selected = this.predictionEngineService.selectDailyTips(
       allCandidates,
       6,
