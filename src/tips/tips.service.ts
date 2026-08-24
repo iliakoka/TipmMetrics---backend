@@ -22,9 +22,12 @@ export class TipsService {
   /**
    * Generates top 5 - 7 tips for a given date (defaults to today)
    */
-  async generateDailyTips(targetDate?: string): Promise<Tip[]> {
+  async generateDailyTips(
+    targetDate?: string,
+    force?: boolean,
+  ): Promise<Tip[]> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
-    this.logger.log(`Starting automated tip generation for: ${dateStr}`);
+    this.logger.log(`Starting automated tip generation for: ${dateStr} (force=${!!force})`);
 
     const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
     const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
@@ -38,10 +41,23 @@ export class TipsService {
     });
 
     if (existingTips.length > 0) {
-      this.logger.log(
-        `Already generated ${existingTips.length} tips for ${dateStr}`,
+      if (!force) {
+        this.logger.log(
+          `Already generated ${existingTips.length} tips for ${dateStr}`,
+        );
+        return existingTips;
+      }
+
+      // If force is true, remove only the pending ones to re-analyze with enhanced algorithm
+      const pendingExisting = existingTips.filter(
+        (t) => t.result === TipResult.PENDING,
       );
-      return existingTips;
+      if (pendingExisting.length > 0) {
+        await this.tipRepository.remove(pendingExisting);
+        this.logger.log(
+          `Force refresh: Removed ${pendingExisting.length} pending tips to re-calculate with updated engine`,
+        );
+      }
     }
 
     // 2. Fetch fixtures for today

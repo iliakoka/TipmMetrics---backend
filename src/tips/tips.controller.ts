@@ -40,11 +40,14 @@ export class TipsController {
   }
 
   /**
-   * POST /tips/generate — manually trigger tip generation for a specific date (e.g. "2026-08-24")
+   * POST /tips/generate — manually trigger tip generation with optional force refresh
    */
   @Post('generate')
-  async generateDailyTips(@Body('date') date?: string) {
-    return this.tipsService.generateDailyTips(date);
+  async generateDailyTips(
+    @Body('date') date?: string,
+    @Body('force') force?: boolean,
+  ) {
+    return this.tipsService.generateDailyTips(date, force);
   }
 
   /**
