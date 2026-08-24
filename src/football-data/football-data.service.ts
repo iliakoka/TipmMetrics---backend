@@ -28,6 +28,11 @@ export class FootballDataService {
   private readonly logger = new Logger(FootballDataService.name);
   private client: AxiosInstance;
 
+  // In-memory caches to respect rate limits and conserve quota
+  private statsCache = new Map<string, any>();
+  private h2hCache = new Map<string, any[]>();
+  private oddsCache = new Map<number, any>();
+
   constructor(
     private configService: ConfigService,
     @InjectRepository(Fixture)
@@ -43,7 +48,7 @@ export class FootballDataService {
       headers: {
         'x-apisports-key': apiKey,
       },
-      timeout: 15000,
+      timeout: 10000,
     });
   }
 
@@ -67,7 +72,7 @@ export class FootballDataService {
         const leagueId = item.league?.id;
         const isTargetLeague = TARGET_LEAGUES.some((l) => l.id === leagueId);
 
-        if (!isTargetLeague && rawFixtures.length > 50) {
+        if (!isTargetLeague && rawFixtures.length > 30) {
           continue;
         }
 
@@ -106,14 +111,19 @@ export class FootballDataService {
       this.logger.error(
         `Failed to sync fixtures for ${dateStr}: ${error.message}`,
       );
-      return [];
+      // Return existing stored fixtures from database if API failed
+      return this.fixtureRepository.find();
     }
   }
 
   /**
-   * Fetch bookmaker pre-match odds for a specific fixture
+   * Fetch bookmaker pre-match odds for a specific fixture (with in-memory cache)
    */
   async getOddsForFixture(apiFixtureId: number): Promise<any | null> {
+    if (this.oddsCache.has(apiFixtureId)) {
+      return this.oddsCache.get(apiFixtureId);
+    }
+
     try {
       const response = await this.client.get('/odds', {
         params: {
@@ -121,42 +131,53 @@ export class FootballDataService {
         },
       });
 
-      const oddsData = response.data?.response?.[0];
-      return oddsData || null;
+      const oddsData = response.data?.response?.[0] || null;
+      if (oddsData) {
+        this.oddsCache.set(apiFixtureId, oddsData);
+      }
+      return oddsData;
     } catch (error) {
-      this.logger.warn(
-        `Could not fetch odds for fixture ${apiFixtureId}: ${error.message}`,
-      );
       return null;
     }
   }
 
   /**
-   * Fetch Head-to-Head matches between two teams
+   * Fetch Head-to-Head matches between two teams (with cache)
    */
   async getH2H(homeTeamId: number, awayTeamId: number): Promise<any[]> {
+    const cacheKey = `${homeTeamId}-${awayTeamId}`;
+    if (this.h2hCache.has(cacheKey)) {
+      return this.h2hCache.get(cacheKey) || [];
+    }
+
     try {
       const response = await this.client.get('/fixtures/headtohead', {
         params: {
-          h2h: `${homeTeamId}-${awayTeamId}`,
+          h2h: cacheKey,
         },
       });
 
-      return response.data?.response || [];
+      const data = response.data?.response || [];
+      this.h2hCache.set(cacheKey, data);
+      return data;
     } catch (error) {
-      this.logger.warn(`Could not fetch H2H for ${homeTeamId} vs ${awayTeamId}`);
       return [];
     }
   }
 
   /**
-   * Fetch real team statistics from API-Sports
+   * Fetch real team statistics from API-Sports (with cache)
    */
   async getTeamStats(
     teamId: number,
     leagueId: number,
     season = 2024,
   ): Promise<any | null> {
+    const cacheKey = `${teamId}-${leagueId}-${season}`;
+    if (this.statsCache.has(cacheKey)) {
+      return this.statsCache.get(cacheKey);
+    }
+
     try {
       const response = await this.client.get('/teams/statistics', {
         params: {
@@ -166,11 +187,12 @@ export class FootballDataService {
         },
       });
 
-      return response.data?.response || null;
+      const data = response.data?.response || null;
+      if (data) {
+        this.statsCache.set(cacheKey, data);
+      }
+      return data;
     } catch (error) {
-      this.logger.warn(
-        `Could not fetch team statistics for team ${teamId}: ${error.message}`,
-      );
       return null;
     }
   }

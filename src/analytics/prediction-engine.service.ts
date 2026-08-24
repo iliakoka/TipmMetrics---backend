@@ -314,7 +314,7 @@ export class PredictionEngineService {
   // --- Helper Analytics Functions ---
 
   private isTargetOdds(odds: number): boolean {
-    return odds >= 1.65 && odds <= 2.15;
+    return odds >= 1.55 && odds <= 2.30;
   }
 
   private computeConfidence(probability: number, odds: number): number {
