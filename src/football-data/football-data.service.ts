@@ -52,13 +52,11 @@ export class FootballDataService {
    */
   async syncFixturesForDate(dateStr: string): Promise<Fixture[]> {
     this.logger.log(`Syncing fixtures for date: ${dateStr}`);
-    const leagueIds = TARGET_LEAGUES.map((l) => l.id).join('-');
 
     try {
       const response = await this.client.get('/fixtures', {
         params: {
           date: dateStr,
-          league: undefined, // fetch all on that date, we filter by target leagues
         },
       });
 
@@ -69,7 +67,6 @@ export class FootballDataService {
         const leagueId = item.league?.id;
         const isTargetLeague = TARGET_LEAGUES.some((l) => l.id === leagueId);
 
-        // Prioritize target leagues, or include all top tier matches
         if (!isTargetLeague && rawFixtures.length > 50) {
           continue;
         }
@@ -142,7 +139,6 @@ export class FootballDataService {
       const response = await this.client.get('/fixtures/headtohead', {
         params: {
           h2h: `${homeTeamId}-${awayTeamId}`,
-          last: 10,
         },
       });
 
@@ -154,22 +150,28 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch recent matches for a team
+   * Fetch real team statistics from API-Sports
    */
-  async getTeamRecentMatches(teamId: number, lastCount = 10): Promise<any[]> {
+  async getTeamStats(
+    teamId: number,
+    leagueId: number,
+    season = 2024,
+  ): Promise<any | null> {
     try {
-      const response = await this.client.get('/fixtures', {
+      const response = await this.client.get('/teams/statistics', {
         params: {
           team: teamId,
-          last: lastCount,
-          status: 'FT',
+          league: leagueId,
+          season,
         },
       });
 
-      return response.data?.response || [];
+      return response.data?.response || null;
     } catch (error) {
-      this.logger.warn(`Could not fetch recent matches for team ${teamId}`);
-      return [];
+      this.logger.warn(
+        `Could not fetch team statistics for team ${teamId}: ${error.message}`,
+      );
+      return null;
     }
   }
 

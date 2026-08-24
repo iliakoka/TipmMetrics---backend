@@ -80,9 +80,15 @@ export class TipsService {
 
     for (const fixture of sampleFixtures) {
       try {
-        const [homeRecent, awayRecent, h2h, odds] = await Promise.all([
-          this.footballDataService.getTeamRecentMatches(fixture.homeTeamId, 6),
-          this.footballDataService.getTeamRecentMatches(fixture.awayTeamId, 6),
+        const [homeStats, awayStats, h2h, odds] = await Promise.all([
+          this.footballDataService.getTeamStats(
+            fixture.homeTeamId,
+            fixture.leagueId,
+          ),
+          this.footballDataService.getTeamStats(
+            fixture.awayTeamId,
+            fixture.leagueId,
+          ),
           this.footballDataService.getH2H(
             fixture.homeTeamId,
             fixture.awayTeamId,
@@ -92,8 +98,8 @@ export class TipsService {
 
         const candidates = this.predictionEngineService.analyzeFixture(
           fixture,
-          homeRecent,
-          awayRecent,
+          homeStats,
+          awayStats,
           h2h,
           odds,
         );
