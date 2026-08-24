@@ -105,6 +105,8 @@ export class TipsService {
         );
 
         allCandidates.push(...candidates);
+        // Small throttle to stay smoothly within API rate limits
+        await new Promise((resolve) => setTimeout(resolve, 120));
       } catch (err) {
         this.logger.error(
           `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,

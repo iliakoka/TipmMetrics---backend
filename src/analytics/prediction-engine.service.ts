@@ -128,9 +128,9 @@ export class PredictionEngineService {
       h2hOver25Rate: Number(h2hOver25Rate.toFixed(2)),
     };
 
-    // --- MARKET A: Home Win (1X2) ---
+    // --- MARKET A: Match Winner (Home Win / Away Win) ---
     const homeWinOdds = extractedOdds.homeWin || Number((1 / (probHomeWin * 0.94)).toFixed(2));
-    if (this.isTargetOdds(homeWinOdds) && probHomeWin > 0.46) {
+    if (this.isTargetOdds(homeWinOdds) && probHomeWin > 0.45) {
       const confidence = this.computeConfidence(probHomeWin, homeWinOdds);
       candidates.push({
         fixture,
@@ -147,9 +147,27 @@ export class PredictionEngineService {
       });
     }
 
+    const awayWinOdds = extractedOdds.awayWin || Number((1 / (probAwayWin * 0.94)).toFixed(2));
+    if (this.isTargetOdds(awayWinOdds) && probAwayWin > 0.45) {
+      const confidence = this.computeConfidence(probAwayWin, awayWinOdds);
+      candidates.push({
+        fixture,
+        market: 'AWAY_WIN',
+        prediction: `${fixture.awayTeamName} To Win`,
+        odds: awayWinOdds,
+        confidenceScore: confidence,
+        factors: {
+          ...baseFactors,
+          marketType: 'AWAY_WIN',
+          modelProbability: Number((probAwayWin * 100).toFixed(1)),
+          impliedOddsProbability: Number(((1 / awayWinOdds) * 100).toFixed(1)),
+        },
+      });
+    }
+
     // --- MARKET B: Double Chance (1X or X2) ---
     const dc1XOdds = extractedOdds.doubleChance1X || Number((1 / (prob1X * 0.96)).toFixed(2));
-    if (this.isTargetOdds(dc1XOdds) && prob1X > 0.65) {
+    if (this.isTargetOdds(dc1XOdds) && prob1X > 0.60) {
       const confidence = this.computeConfidence(prob1X, dc1XOdds);
       candidates.push({
         fixture,
@@ -167,7 +185,7 @@ export class PredictionEngineService {
     }
 
     const dcX2Odds = extractedOdds.doubleChanceX2 || Number((1 / (probX2 * 0.96)).toFixed(2));
-    if (this.isTargetOdds(dcX2Odds) && probX2 > 0.65) {
+    if (this.isTargetOdds(dcX2Odds) && probX2 > 0.60) {
       const confidence = this.computeConfidence(probX2, dcX2Odds);
       candidates.push({
         fixture,
@@ -184,10 +202,10 @@ export class PredictionEngineService {
       });
     }
 
-    // --- MARKET C: Over 2.5 Goals ---
+    // --- MARKET C: Goals (Over 2.5 / Under 2.5) ---
     const over25Odds = extractedOdds.over25 || Number((1 / (probOver2_5 * 0.95)).toFixed(2));
     const combinedOverProb = probOver2_5 * 0.7 + h2hOver25Rate * 0.3;
-    if (this.isTargetOdds(over25Odds) && combinedOverProb > 0.50) {
+    if (this.isTargetOdds(over25Odds) && combinedOverProb > 0.48) {
       const confidence = this.computeConfidence(combinedOverProb, over25Odds);
       candidates.push({
         fixture,
@@ -205,10 +223,31 @@ export class PredictionEngineService {
       });
     }
 
-    // --- MARKET D: Both Teams To Score (BTTS - Yes) ---
+    const probUnder2_5 = 1 - probOver2_5;
+    const under25Odds = extractedOdds.under25 || Number((1 / (probUnder2_5 * 0.95)).toFixed(2));
+    const combinedUnderProb = probUnder2_5 * 0.7 + (1 - h2hOver25Rate) * 0.3;
+    if (this.isTargetOdds(under25Odds) && combinedUnderProb > 0.48) {
+      const confidence = this.computeConfidence(combinedUnderProb, under25Odds);
+      candidates.push({
+        fixture,
+        market: 'UNDER_2_5',
+        prediction: 'Under 2.5 Goals',
+        odds: under25Odds,
+        confidenceScore: confidence,
+        factors: {
+          ...baseFactors,
+          marketType: 'UNDER_2_5',
+          modelProbability: Number((probUnder2_5 * 100).toFixed(1)),
+          combinedProbability: Number((combinedUnderProb * 100).toFixed(1)),
+          impliedOddsProbability: Number(((1 / under25Odds) * 100).toFixed(1)),
+        },
+      });
+    }
+
+    // --- MARKET D: Both Teams To Score (BTTS: Yes / No) ---
     const bttsOdds = extractedOdds.bttsYes || Number((1 / (probBTTS * 0.95)).toFixed(2));
     const combinedBttsProb = probBTTS * 0.7 + h2hBttsRate * 0.3;
-    if (this.isTargetOdds(bttsOdds) && combinedBttsProb > 0.50) {
+    if (this.isTargetOdds(bttsOdds) && combinedBttsProb > 0.48) {
       const confidence = this.computeConfidence(combinedBttsProb, bttsOdds);
       candidates.push({
         fixture,
@@ -226,6 +265,27 @@ export class PredictionEngineService {
       });
     }
 
+    const probBTTSNo = 1 - probBTTS;
+    const bttsNoOdds = extractedOdds.bttsNo || Number((1 / (probBTTSNo * 0.95)).toFixed(2));
+    const combinedBttsNoProb = probBTTSNo * 0.7 + (1 - h2hBttsRate) * 0.3;
+    if (this.isTargetOdds(bttsNoOdds) && combinedBttsNoProb > 0.48) {
+      const confidence = this.computeConfidence(combinedBttsNoProb, bttsNoOdds);
+      candidates.push({
+        fixture,
+        market: 'BTTS_NO',
+        prediction: 'Both Teams To Score: No',
+        odds: bttsNoOdds,
+        confidenceScore: confidence,
+        factors: {
+          ...baseFactors,
+          marketType: 'BTTS_NO',
+          modelProbability: Number((probBTTSNo * 100).toFixed(1)),
+          combinedProbability: Number((combinedBttsNoProb * 100).toFixed(1)),
+          impliedOddsProbability: Number(((1 / bttsNoOdds) * 100).toFixed(1)),
+        },
+      });
+    }
+
     return candidates;
   }
 
@@ -237,13 +297,28 @@ export class PredictionEngineService {
 
     const selected: CandidateTip[] = [];
     const usedFixtureIds = new Set<string>();
+    const marketCounts: Record<string, number> = {};
 
+    // Max 2 tips of the same market type to guarantee diversity
     for (const cand of candidates) {
-      if (!usedFixtureIds.has(cand.fixture.id)) {
+      const currentMarketCount = marketCounts[cand.market] || 0;
+      if (!usedFixtureIds.has(cand.fixture.id) && currentMarketCount < 2) {
         selected.push(cand);
         usedFixtureIds.add(cand.fixture.id);
+        marketCounts[cand.market] = currentMarketCount + 1;
 
         if (selected.length >= targetCount) break;
+      }
+    }
+
+    // Fill remaining if needed
+    if (selected.length < targetCount) {
+      for (const cand of candidates) {
+        if (!usedFixtureIds.has(cand.fixture.id)) {
+          selected.push(cand);
+          usedFixtureIds.add(cand.fixture.id);
+          if (selected.length >= targetCount) break;
+        }
       }
     }
 
