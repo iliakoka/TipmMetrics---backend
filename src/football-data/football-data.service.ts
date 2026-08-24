@@ -111,7 +111,6 @@ export class FootballDataService {
       this.logger.error(
         `Failed to sync fixtures for ${dateStr}: ${error.message}`,
       );
-      // Return existing stored fixtures from database if API failed
       return this.fixtureRepository.find();
     }
   }
@@ -166,20 +165,20 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch real team statistics from API-Sports (with cache)
+   * Fetch real team statistics from API-Sports (with multi-season fallback & cache)
    */
   async getTeamStats(
     teamId: number,
     leagueId: number,
     season = 2024,
   ): Promise<any | null> {
-    const cacheKey = `${teamId}-${leagueId}-${season}`;
+    const cacheKey = `${teamId}-${leagueId}`;
     if (this.statsCache.has(cacheKey)) {
       return this.statsCache.get(cacheKey);
     }
 
     try {
-      const response = await this.client.get('/teams/statistics', {
+      let response = await this.client.get('/teams/statistics', {
         params: {
           team: teamId,
           league: leagueId,
@@ -187,11 +186,24 @@ export class FootballDataService {
         },
       });
 
-      const data = response.data?.response || null;
+      let data = response.data?.response;
+
+      // If no games played in current season, fallback to previous season
+      if (!data?.fixtures?.played?.total || data.fixtures.played.total === 0) {
+        response = await this.client.get('/teams/statistics', {
+          params: {
+            team: teamId,
+            league: leagueId,
+            season: season - 1,
+          },
+        });
+        data = response.data?.response;
+      }
+
       if (data) {
         this.statsCache.set(cacheKey, data);
       }
-      return data;
+      return data || null;
     } catch (error) {
       return null;
     }

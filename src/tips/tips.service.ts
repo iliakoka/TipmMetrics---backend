@@ -76,7 +76,7 @@ export class TipsService {
       upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
 
     const allCandidates: CandidateTip[] = [];
-    const sampleFixtures = targetFixtures.slice(0, 15);
+    const sampleFixtures = targetFixtures.slice(0, 25);
 
     for (const fixture of sampleFixtures) {
       try {
@@ -105,8 +105,14 @@ export class TipsService {
         );
 
         allCandidates.push(...candidates);
+
+        // Once we have 10+ verified high-confidence candidates, stop querying to save quota
+        if (allCandidates.length >= 12) {
+          break;
+        }
+
         // Small throttle to stay smoothly within API rate limits
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       } catch (err) {
         this.logger.error(
           `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,

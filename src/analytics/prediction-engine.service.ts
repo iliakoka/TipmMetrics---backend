@@ -30,6 +30,7 @@ export class PredictionEngineService {
 
   /**
    * Analyze match with real team stats, Poisson distribution, and market value detection
+   * Strictly skips fixtures with missing or unverified data.
    */
   analyzeFixture(
     fixture: Fixture,
@@ -38,26 +39,35 @@ export class PredictionEngineService {
     h2h: any[],
     bookmakerOdds?: any,
   ): CandidateTip[] {
-    const candidates: CandidateTip[] = [];
+    // 1. Strict Data Verification: if either team lacks goal statistics, SKIP!
+    if (!homeStats?.goals?.for?.average || !awayStats?.goals?.for?.average) {
+      return [];
+    }
 
-    // 1. Extract Real Goals Averages
     const homeGoalsScored =
-      parseFloat(homeStats?.goals?.for?.average?.home) ||
-      parseFloat(homeStats?.goals?.for?.average?.total) ||
-      1.4;
+      parseFloat(homeStats.goals.for.average.home) ||
+      parseFloat(homeStats.goals.for.average.total) ||
+      0;
     const homeGoalsConceded =
-      parseFloat(homeStats?.goals?.against?.average?.home) ||
-      parseFloat(homeStats?.goals?.against?.average?.total) ||
-      1.2;
+      parseFloat(homeStats.goals.against.average.home) ||
+      parseFloat(homeStats.goals.against.average.total) ||
+      0;
 
     const awayGoalsScored =
-      parseFloat(awayStats?.goals?.for?.average?.away) ||
-      parseFloat(awayStats?.goals?.for?.average?.total) ||
-      1.1;
+      parseFloat(awayStats.goals.for.average.away) ||
+      parseFloat(awayStats.goals.for.average.total) ||
+      0;
     const awayGoalsConceded =
-      parseFloat(awayStats?.goals?.against?.average?.away) ||
-      parseFloat(awayStats?.goals?.against?.average?.total) ||
-      1.3;
+      parseFloat(awayStats.goals.against.average.away) ||
+      parseFloat(awayStats.goals.against.average.total) ||
+      0;
+
+    // Both teams must have valid goal averages
+    if (homeGoalsScored <= 0.1 || awayGoalsScored <= 0.1) {
+      return [];
+    }
+
+    const candidates: CandidateTip[] = [];
 
     // League standard baselines
     const leagueAvgHomeGoals = 1.45;
@@ -68,14 +78,14 @@ export class PredictionEngineService {
       0.5,
       Math.min(
         3.5,
-        (homeGoalsScored * awayGoalsConceded) / leagueAvgAwayGoals,
+        (homeGoalsScored * (awayGoalsConceded || 1.2)) / leagueAvgAwayGoals,
       ),
     );
     const lambdaAway = Math.max(
       0.4,
       Math.min(
         3.0,
-        (awayGoalsScored * homeGoalsConceded) / leagueAvgHomeGoals,
+        (awayGoalsScored * (homeGoalsConceded || 1.2)) / leagueAvgHomeGoals,
       ),
     );
 
@@ -105,8 +115,8 @@ export class PredictionEngineService {
     const probX2 = probAwayWin + probDraw;
 
     // 3. Form & H2H Metrics
-    const homeFormString = homeStats?.form?.slice(-6) || 'WDLWDL';
-    const awayFormString = awayStats?.form?.slice(-6) || 'LDWLDW';
+    const homeFormString = homeStats?.form?.slice(-6) || 'WDL';
+    const awayFormString = awayStats?.form?.slice(-6) || 'WDL';
     const homeFormPts = this.calcFormPoints(homeFormString);
     const awayFormPts = this.calcFormPoints(awayFormString);
 
@@ -290,10 +300,9 @@ export class PredictionEngineService {
   }
 
   /**
-   * Select top distinct tips purely ranked by highest mathematical confidence and accuracy
+   * Select top distinct tips strictly ranked by highest mathematical confidence and accuracy
    */
   selectDailyTips(candidates: CandidateTip[], targetCount = 6): CandidateTip[] {
-    // Sort strictly by highest confidence score
     candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
 
     const selected: CandidateTip[] = [];
@@ -369,14 +378,23 @@ export class PredictionEngineService {
       if (bet.name === 'Match Winner') {
         const home = bet.values?.find((v: any) => v.value === 'Home')?.odd;
         if (home) odds.homeWin = parseFloat(home);
+
+        const away = bet.values?.find((v: any) => v.value === 'Away')?.odd;
+        if (away) odds.awayWin = parseFloat(away);
       }
       if (bet.name === 'Both Teams Score') {
         const yes = bet.values?.find((v: any) => v.value === 'Yes')?.odd;
         if (yes) odds.bttsYes = parseFloat(yes);
+
+        const no = bet.values?.find((v: any) => v.value === 'No')?.odd;
+        if (no) odds.bttsNo = parseFloat(no);
       }
       if (bet.name === 'Goals Over/Under') {
         const over = bet.values?.find((v: any) => v.value === 'Over 2.5')?.odd;
         if (over) odds.over25 = parseFloat(over);
+
+        const under = bet.values?.find((v: any) => v.value === 'Under 2.5')?.odd;
+        if (under) odds.under25 = parseFloat(under);
       }
       if (bet.name === 'Double Chance') {
         const dc1x = bet.values?.find(
