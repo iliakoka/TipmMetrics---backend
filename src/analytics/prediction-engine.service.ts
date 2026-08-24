@@ -29,7 +29,13 @@ export class PredictionEngineService {
   }
 
   /**
-   * Analyze a match using historical data, Poisson goals model, and form metrics
+   * Advanced Match Analysis with:
+   * 1. Poisson Goal Expectancy
+   * 2. Schedule Fatigue & Rest Days Differential
+   * 3. Home vs Away Venue Asymmetry
+   * 4. Scoring Consistency (Variance Dampening)
+   * 5. Clean Sheet & BTTS Historical Tendencies
+   * 6. Target Odds Filtering (1.65 – 2.15)
    */
   analyzeFixture(
     fixture: Fixture,
@@ -39,50 +45,62 @@ export class PredictionEngineService {
     bookmakerOdds?: any,
   ): CandidateTip[] {
     const candidates: CandidateTip[] = [];
+    const matchDate = new Date(fixture.matchDate);
 
-    // 1. Calculate Goals Averages
-    const homeGoalsScored = this.avgGoals(homeRecent, fixture.homeTeamId, true);
-    const homeGoalsConceded = this.avgGoals(
-      homeRecent,
-      fixture.homeTeamId,
-      false,
-    );
-    const awayGoalsScored = this.avgGoals(awayRecent, fixture.awayTeamId, true);
-    const awayGoalsConceded = this.avgGoals(
-      awayRecent,
-      fixture.awayTeamId,
-      false,
-    );
+    // 1. Calculate Rest Days & Schedule Fatigue
+    const homeRestDays = this.calcRestDays(homeRecent, matchDate);
+    const awayRestDays = this.calcRestDays(awayRecent, matchDate);
 
-    // League standard baselines
+    // Fatigue multiplier: < 3.5 days rest impairs attack by 7%, increases defensive lapses by 8%
+    const homeFatigueAttack = homeRestDays < 3.5 ? 0.93 : 1.0;
+    const homeFatigueDef = homeRestDays < 3.5 ? 1.08 : 1.0;
+
+    const awayFatigueAttack = awayRestDays < 3.5 ? 0.92 : 1.0;
+    const awayFatigueDef = awayRestDays < 3.5 ? 1.08 : 1.0;
+
+    // 2. Strict Venue Asymmetry (70% Venue Specific + 30% Overall)
+    const homeVenueGoalsScored = this.avgGoalsVenue(homeRecent, fixture.homeTeamId, true, true);
+    const homeVenueGoalsConceded = this.avgGoalsVenue(homeRecent, fixture.homeTeamId, true, false);
+    const homeOverallGoalsScored = this.avgGoals(homeRecent, fixture.homeTeamId, true);
+    const homeOverallGoalsConceded = this.avgGoals(homeRecent, fixture.homeTeamId, false);
+
+    const effHomeScored = (0.7 * homeVenueGoalsScored + 0.3 * homeOverallGoalsScored) * homeFatigueAttack;
+    const effHomeConceded = (0.7 * homeVenueGoalsConceded + 0.3 * homeOverallGoalsConceded) * homeFatigueDef;
+
+    const awayVenueGoalsScored = this.avgGoalsVenue(awayRecent, fixture.awayTeamId, false, true);
+    const awayVenueGoalsConceded = this.avgGoalsVenue(awayRecent, fixture.awayTeamId, false, false);
+    const awayOverallGoalsScored = this.avgGoals(awayRecent, fixture.awayTeamId, true);
+    const awayOverallGoalsConceded = this.avgGoals(awayRecent, fixture.awayTeamId, false);
+
+    const effAwayScored = (0.7 * awayVenueGoalsScored + 0.3 * awayOverallGoalsScored) * awayFatigueAttack;
+    const effAwayConceded = (0.7 * awayVenueGoalsConceded + 0.3 * awayOverallGoalsConceded) * awayFatigueDef;
+
+    // Baseline league averages
     const leagueAvgHomeGoals = 1.45;
     const leagueAvgAwayGoals = 1.15;
 
-    // Expected goals (λ) using attack / defense strength
+    // Expected goals (λ)
     const lambdaHome = Math.max(
-      0.6,
+      0.5,
       Math.min(
-        3.5,
-        ((homeGoalsScored || 1.4) * (awayGoalsConceded || 1.2)) /
-          leagueAvgAwayGoals,
+        3.6,
+        (effHomeScored * effAwayConceded) / leagueAvgAwayGoals,
       ),
     );
     const lambdaAway = Math.max(
-      0.5,
+      0.4,
       Math.min(
-        3.0,
-        ((awayGoalsScored || 1.1) * (homeGoalsConceded || 1.2)) /
-          leagueAvgHomeGoals,
+        3.2,
+        (effAwayScored * effHomeConceded) / leagueAvgHomeGoals,
       ),
     );
 
-    // 2. Compute Joint Probability Matrix (0 to 6 goals)
+    // 3. Compute Joint Poisson Matrix (0-6 goals each)
     let probHomeWin = 0;
     let probDraw = 0;
     let probAwayWin = 0;
     let probBTTS = 0;
     let probOver2_5 = 0;
-    let probUnder2_5 = 0;
 
     for (let h = 0; h <= 6; h++) {
       for (let a = 0; a <= 6; a++) {
@@ -96,41 +114,56 @@ export class PredictionEngineService {
 
         if (h > 0 && a > 0) probBTTS += pScore;
         if (h + a > 2.5) probOver2_5 += pScore;
-        else probUnder2_5 += pScore;
       }
     }
 
     const prob1X = probHomeWin + probDraw;
     const probX2 = probAwayWin + probDraw;
 
-    // 3. Empirical Form Metrics
+    // 4. Scoring Consistency & Clean Sheet Rates (Variance Dampening)
+    const homeConsistency = this.calcScoringConsistency(homeRecent, fixture.homeTeamId);
+    const awayConsistency = this.calcScoringConsistency(awayRecent, fixture.awayTeamId);
+    const homeCleanSheetRate = this.calcCleanSheetRate(homeRecent, fixture.homeTeamId);
+    const awayCleanSheetRate = this.calcCleanSheetRate(awayRecent, fixture.awayTeamId);
+
     const homeBttsRate = this.calcBttsRate(homeRecent);
     const awayBttsRate = this.calcBttsRate(awayRecent);
     const h2hBttsRate = h2h.length > 0 ? this.calcBttsRate(h2h) : (homeBttsRate + awayBttsRate) / 2;
 
     const homeOver25Rate = this.calcOverRate(homeRecent, 2.5);
     const awayOver25Rate = this.calcOverRate(awayRecent, 2.5);
+    const h2hOver25Rate = h2h.length > 0 ? this.calcOverRate(h2h, 2.5) : (homeOver25Rate + awayOver25Rate) / 2;
 
-    // 4. Extract Real Bookmaker Odds or Estimate Realistic Odds
+    // 5. Parse Bookmaker Odds
     const extractedOdds = this.parseOdds(bookmakerOdds);
 
-    // Common factor diagnostic payload (saved for 2-3 month backtesting)
+    // Common factor diagnostic payload (saved for 2-3 month backtesting & optimization)
     const baseFactors = {
       lambdaHome: Number(lambdaHome.toFixed(2)),
       lambdaAway: Number(lambdaAway.toFixed(2)),
-      homeRecentGames: homeRecent.length,
-      awayRecentGames: awayRecent.length,
-      h2hMatches: h2h.length,
-      homeBttsRateLast10: Number(homeBttsRate.toFixed(2)),
-      awayBttsRateLast10: Number(awayBttsRate.toFixed(2)),
+      homeRestDays,
+      awayRestDays,
+      homeFatigueApplied: homeRestDays < 3.5,
+      awayFatigueApplied: awayRestDays < 3.5,
+      homeScoringConsistency: Number((homeConsistency * 100).toFixed(1)),
+      awayScoringConsistency: Number((awayConsistency * 100).toFixed(1)),
+      homeCleanSheetRate: Number((homeCleanSheetRate * 100).toFixed(1)),
+      awayCleanSheetRate: Number((awayCleanSheetRate * 100).toFixed(1)),
+      h2hMatchesAnalyzed: h2h.length,
       h2hBttsRate: Number(h2hBttsRate.toFixed(2)),
-      homeOver25Rate: Number(homeOver25Rate.toFixed(2)),
-      awayOver25Rate: Number(awayOver25Rate.toFixed(2)),
+      h2hOver25Rate: Number(h2hOver25Rate.toFixed(2)),
     };
 
     // --- MARKET A: Both Teams To Score (BTTS - Yes) ---
     const bttsOdds = extractedOdds.bttsYes || Number((1 / (probBTTS * 0.95)).toFixed(2));
-    const combinedBttsProb = probBTTS * 0.5 + homeBttsRate * 0.25 + awayBttsRate * 0.25;
+    // Blend: 45% Poisson + 25% Consistency & Clean Sheets + 20% Form BTTS + 10% H2H
+    const consistencyBTTSFactor = (homeConsistency * (1 - awayCleanSheetRate) + awayConsistency * (1 - homeCleanSheetRate)) / 2;
+    const combinedBttsProb =
+      probBTTS * 0.45 +
+      consistencyBTTSFactor * 0.25 +
+      ((homeBttsRate + awayBttsRate) / 2) * 0.20 +
+      h2hBttsRate * 0.10;
+
     if (this.isTargetOdds(bttsOdds)) {
       const confidence = this.computeConfidence(combinedBttsProb, bttsOdds);
       candidates.push({
@@ -151,7 +184,11 @@ export class PredictionEngineService {
 
     // --- MARKET B: Over 2.5 Goals ---
     const over25Odds = extractedOdds.over25 || Number((1 / (probOver2_5 * 0.95)).toFixed(2));
-    const combinedOverProb = probOver2_5 * 0.5 + homeOver25Rate * 0.25 + awayOver25Rate * 0.25;
+    const combinedOverProb =
+      probOver2_5 * 0.45 +
+      ((homeOver25Rate + awayOver25Rate) / 2) * 0.35 +
+      h2hOver25Rate * 0.20;
+
     if (this.isTargetOdds(over25Odds)) {
       const confidence = this.computeConfidence(combinedOverProb, over25Odds);
       candidates.push({
@@ -212,10 +249,9 @@ export class PredictionEngineService {
   }
 
   /**
-   * Filter top 5 - 7 distinct tips with highest confidence and best distribution
+   * Select top 5 - 7 distinct tips with highest confidence and balanced league representation
    */
   selectDailyTips(candidates: CandidateTip[], targetCount = 6): CandidateTip[] {
-    // Sort descending by confidence score
     candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
 
     const selected: CandidateTip[] = [];
@@ -233,7 +269,7 @@ export class PredictionEngineService {
     return selected;
   }
 
-  // --- Helper Methods ---
+  // --- Helper Analytics Functions ---
 
   private isTargetOdds(odds: number): boolean {
     return odds >= 1.65 && odds <= 2.15;
@@ -241,10 +277,21 @@ export class PredictionEngineService {
 
   private computeConfidence(probability: number, odds: number): number {
     const impliedProb = 1 / odds;
-    const valueEdge = probability - impliedProb; // Expected value margin
+    const valueEdge = probability - impliedProb; // Positive Expected Value (EV+)
     const baseScore = probability * 100;
-    const valueBonus = Math.max(-10, Math.min(15, valueEdge * 80));
-    return Number(Math.max(40, Math.min(96, baseScore + valueBonus)).toFixed(1));
+    const valueBonus = Math.max(-10, Math.min(15, valueEdge * 85));
+    return Number(Math.max(40, Math.min(97, baseScore + valueBonus)).toFixed(1));
+  }
+
+  private calcRestDays(matches: any[], targetMatchDate: Date): number {
+    if (!matches || matches.length === 0) return 7;
+    const lastMatch = matches[0];
+    if (!lastMatch?.fixture?.date) return 7;
+
+    const lastMatchDate = new Date(lastMatch.fixture.date);
+    const diffMs = targetMatchDate.getTime() - lastMatchDate.getTime();
+    const days = diffMs / (1000 * 60 * 60 * 24);
+    return Number(Math.max(1, Math.min(14, days)).toFixed(1));
   }
 
   private avgGoals(matches: any[], teamId: number, isScored: boolean): number {
@@ -269,6 +316,71 @@ export class PredictionEngineService {
     }
 
     return count > 0 ? total / count : 1.2;
+  }
+
+  private avgGoalsVenue(
+    matches: any[],
+    teamId: number,
+    isHomeVenue: boolean,
+    isScored: boolean,
+  ): number {
+    if (!matches || matches.length === 0) return 1.2;
+    let total = 0;
+    let count = 0;
+
+    for (const m of matches) {
+      const isHomeMatch = m.teams?.home?.id === teamId;
+      if (isHomeVenue !== isHomeMatch) continue; // Skip matches not at this venue
+
+      const goals = isScored
+        ? isHomeMatch
+          ? m.goals?.home
+          : m.goals?.away
+        : isHomeMatch
+          ? m.goals?.away
+          : m.goals?.home;
+
+      if (goals !== null && goals !== undefined) {
+        total += goals;
+        count++;
+      }
+    }
+
+    return count > 0 ? total / count : this.avgGoals(matches, teamId, isScored);
+  }
+
+  private calcScoringConsistency(matches: any[], teamId: number): number {
+    if (!matches || matches.length === 0) return 0.7;
+    let scoredMatches = 0;
+    let valid = 0;
+
+    for (const m of matches) {
+      const isHome = m.teams?.home?.id === teamId;
+      const goals = isHome ? m.goals?.home : m.goals?.away;
+      if (goals !== null && goals !== undefined) {
+        if (goals > 0) scoredMatches++;
+        valid++;
+      }
+    }
+
+    return valid > 0 ? scoredMatches / valid : 0.7;
+  }
+
+  private calcCleanSheetRate(matches: any[], teamId: number): number {
+    if (!matches || matches.length === 0) return 0.25;
+    let cleanSheets = 0;
+    let valid = 0;
+
+    for (const m of matches) {
+      const isHome = m.teams?.home?.id === teamId;
+      const conceded = isHome ? m.goals?.away : m.goals?.home;
+      if (conceded !== null && conceded !== undefined) {
+        if (conceded === 0) cleanSheets++;
+        valid++;
+      }
+    }
+
+    return valid > 0 ? cleanSheets / valid : 0.25;
   }
 
   private calcBttsRate(matches: any[]): number {
