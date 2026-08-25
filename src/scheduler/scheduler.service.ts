@@ -9,17 +9,20 @@ export class SchedulerService implements OnModuleInit {
   constructor(private readonly tipsService: TipsService) {}
 
   /**
-   * On startup — generate today's tips immediately so a fresh deploy never
-   * serves an empty slate.
+   * On startup — generate today's tips in the background so a fresh deploy
+   * never serves an empty slate. Uses setImmediate so the app becomes ready
+   * instantly and Railway's health check passes before we start heavy work.
    */
-  async onModuleInit() {
-    this.logger.log('Startup: triggering today\'s tip generation...');
-    try {
-      const tips = await this.tipsService.generateDailyTips();
-      this.logger.log(`Startup: ${tips.length} tips ready for today.`);
-    } catch (err) {
-      this.logger.error(`Startup tip generation failed: ${err.message}`);
-    }
+  onModuleInit() {
+    setImmediate(async () => {
+      this.logger.log('Startup (background): triggering today\'s tip generation...');
+      try {
+        const tips = await this.tipsService.generateDailyTips();
+        this.logger.log(`Startup (background): ${tips.length} tips ready for today.`);
+      } catch (err) {
+        this.logger.error(`Startup tip generation failed: ${err.message}`);
+      }
+    });
   }
 
   /**

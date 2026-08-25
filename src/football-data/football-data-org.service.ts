@@ -54,14 +54,16 @@ export class FootballDataOrgService implements OnModuleInit {
    * This ensures getTeamStats never returns null due to a cold cache
    * on the first request after a deploy or restart.
    */
-  async onModuleInit() {
-    this.logger.log('Pre-warming standings cache for all 12 competitions...');
-    try {
-      await this.warmStandingsCache();
-      this.logger.log(`Standings cache warmed: ${this.standingsCache.size} competitions loaded.`);
-    } catch (err) {
-      this.logger.warn(`Standings cache warm-up failed (non-fatal): ${err.message}`);
-    }
+  onModuleInit() {
+    setImmediate(async () => {
+      this.logger.log('Pre-warming standings cache for all 12 competitions...');
+      try {
+        await this.warmStandingsCache();
+        this.logger.log(`Standings cache warmed: ${this.standingsCache.size} competitions loaded.`);
+      } catch (err) {
+        this.logger.warn(`Standings cache warm-up failed (non-fatal): ${err.message}`);
+      }
+    });
   }
 
   async warmStandingsCache(): Promise<void> {
