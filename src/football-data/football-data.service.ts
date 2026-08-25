@@ -5,19 +5,25 @@ import { Repository } from 'typeorm';
 import axios, { AxiosInstance } from 'axios';
 import { Fixture } from '../fixtures/fixture.entity';
 
-// Top international and domestic first-tier leagues
+// Top international and domestic first-tier leagues and major cups
 export const TARGET_LEAGUES = [
   { id: 39, name: 'Premier League', country: 'England' },
+  { id: 48, name: 'League Cup / EFL Cup', country: 'England' },
+  { id: 45, name: 'FA Cup', country: 'England' },
+  { id: 40, name: 'Championship', country: 'England' },
   { id: 140, name: 'La Liga', country: 'Spain' },
+  { id: 143, name: 'Copa del Rey', country: 'Spain' },
   { id: 135, name: 'Serie A', country: 'Italy' },
+  { id: 137, name: 'Coppa Italia', country: 'Italy' },
   { id: 78, name: 'Bundesliga', country: 'Germany' },
+  { id: 81, name: 'DFB Pokal', country: 'Germany' },
   { id: 61, name: 'Ligue 1', country: 'France' },
+  { id: 66, name: 'Coupe de France', country: 'France' },
   { id: 2, name: 'UEFA Champions League', country: 'World' },
   { id: 3, name: 'UEFA Europa League', country: 'World' },
   { id: 848, name: 'UEFA Europa Conference League', country: 'World' },
   { id: 88, name: 'Eredivisie', country: 'Netherlands' },
   { id: 94, name: 'Primeira Liga', country: 'Portugal' },
-  { id: 40, name: 'Championship', country: 'England' },
   { id: 144, name: 'Jupiler Pro League', country: 'Belgium' },
   { id: 179, name: 'Premiership', country: 'Scotland' },
   { id: 203, name: 'Süper Lig', country: 'Turkey' },
@@ -81,7 +87,14 @@ export class FootballDataService {
 
       for (const item of rawFixtures) {
         const leagueId = item.league?.id;
-        const isTargetLeague = TARGET_LEAGUES.some((l) => l.id === leagueId);
+        const leagueNameLower = item.league?.name?.toLowerCase() || '';
+
+        const isTargetLeague =
+          TARGET_LEAGUES.some((l) => l.id === leagueId) ||
+          leagueNameLower.includes('league cup') ||
+          leagueNameLower.includes('efl cup') ||
+          leagueNameLower.includes('champions league') ||
+          leagueNameLower.includes('copa');
 
         if (!isTargetLeague && rawFixtures.length > 50) {
           continue;
@@ -187,7 +200,7 @@ export class FootballDataService {
       return this.statsCache.get(cacheKey);
     }
 
-    // Try current season down to previous seasons (2024, 2023)
+    // Try current season down to previous season (2024, 2023)
     for (const season of [2024, 2023]) {
       try {
         const response = await this.client.get('/teams/statistics', {

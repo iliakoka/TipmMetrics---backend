@@ -29,8 +29,7 @@ export class PredictionEngineService {
   }
 
   /**
-   * Analyze match with real team stats, Poisson distribution, and market value detection
-   * Strictly skips fixtures with missing or unverified data.
+   * Analyze match with real team stats, Poisson distribution, 2-legged aggregate dynamics, and market value detection
    */
   analyzeFixture(
     fixture: Fixture,
@@ -73,23 +72,66 @@ export class PredictionEngineService {
     const leagueAvgHomeGoals = 1.45;
     const leagueAvgAwayGoals = 1.15;
 
-    // Expected goals (λ) using attack / defense strength
-    const lambdaHome = Math.max(
-      0.5,
-      Math.min(
-        3.5,
-        (homeGoalsScored * (awayGoalsConceded || 1.2)) / leagueAvgAwayGoals,
-      ),
-    );
-    const lambdaAway = Math.max(
-      0.4,
-      Math.min(
-        3.0,
-        (awayGoalsScored * (homeGoalsConceded || 1.2)) / leagueAvgHomeGoals,
-      ),
-    );
+    // 2. Base Expected goals (λ) using attack / defense strength
+    let rawLambdaHome = (homeGoalsScored * (awayGoalsConceded || 1.2)) / leagueAvgAwayGoals;
+    let rawLambdaAway = (awayGoalsScored * (homeGoalsConceded || 1.2)) / leagueAvgHomeGoals;
 
-    // 2. Compute Joint Poisson Matrix (0 to 6 goals)
+    // 3. Two-Legged Aggregate Knockout Intelligence (Champions League, Europa, Cup ties)
+    let isTwoLeggedTie = false;
+    let leg1Score = '';
+    let trailingTeam = '';
+    let goalDeficit = 0;
+
+    const isKnockoutTournament =
+      fixture.leagueName.toLowerCase().includes('uefa') ||
+      fixture.leagueName.toLowerCase().includes('champions') ||
+      fixture.leagueName.toLowerCase().includes('europa') ||
+      fixture.leagueName.toLowerCase().includes('cup') ||
+      fixture.leagueName.toLowerCase().includes('copa');
+
+    if (isKnockoutTournament && h2h && h2h.length > 0) {
+      const recentMatch = h2h[0];
+      const matchDateDiff =
+        Math.abs(
+          new Date(fixture.matchDate).getTime() -
+            new Date(recentMatch.fixture?.date).getTime(),
+        ) /
+        (1000 * 60 * 60 * 24);
+
+      // If they played in the last 16 days, this is Leg 2 of a 2-legged knockout tie!
+      if (matchDateDiff <= 16 && recentMatch.goals?.home !== null) {
+        isTwoLeggedTie = true;
+        const leg1HomeId = recentMatch.teams?.home?.id;
+        const leg1HomeGoals = recentMatch.goals?.home || 0;
+        const leg1AwayGoals = recentMatch.goals?.away || 0;
+        leg1Score = `${recentMatch.teams?.home?.name} ${leg1HomeGoals} - ${leg1AwayGoals} ${recentMatch.teams?.away?.name}`;
+
+        const currentHomeGoalsInLeg1 =
+          leg1HomeId === fixture.homeTeamId ? leg1HomeGoals : leg1AwayGoals;
+        const currentAwayGoalsInLeg1 =
+          leg1HomeId === fixture.awayTeamId ? leg1HomeGoals : leg1AwayGoals;
+
+        if (currentAwayGoalsInLeg1 > currentHomeGoalsInLeg1) {
+          // Current home team is trailing on aggregate -> Must attack aggressively!
+          trailingTeam = fixture.homeTeamName;
+          goalDeficit = currentAwayGoalsInLeg1 - currentHomeGoalsInLeg1;
+          rawLambdaHome *= 1.20; // +20% attacking urgency for trailing home team
+          if (goalDeficit >= 2) {
+            rawLambdaAway *= 0.88; // Away team sits back and defends lead
+          }
+        } else if (currentHomeGoalsInLeg1 > currentAwayGoalsInLeg1) {
+          // Current away team is trailing on aggregate -> Away team must attack
+          trailingTeam = fixture.awayTeamName;
+          goalDeficit = currentHomeGoalsInLeg1 - currentAwayGoalsInLeg1;
+          rawLambdaAway *= 1.18; // +18% attacking urgency for trailing away team
+        }
+      }
+    }
+
+    const lambdaHome = Math.max(0.5, Math.min(3.5, rawLambdaHome));
+    const lambdaAway = Math.max(0.4, Math.min(3.0, rawLambdaAway));
+
+    // 4. Compute Joint Poisson Matrix (0 to 6 goals)
     let probHomeWin = 0;
     let probDraw = 0;
     let probAwayWin = 0;
@@ -114,7 +156,7 @@ export class PredictionEngineService {
     const prob1X = probHomeWin + probDraw;
     const probX2 = probAwayWin + probDraw;
 
-    // 3. Form & H2H Metrics
+    // 5. Form & H2H Metrics
     const homeFormString = homeStats?.form?.slice(-6) || 'WDL';
     const awayFormString = awayStats?.form?.slice(-6) || 'WDL';
     const homeFormPts = this.calcFormPoints(homeFormString);
@@ -123,10 +165,11 @@ export class PredictionEngineService {
     const h2hBttsRate = h2h.length > 0 ? this.calcH2hBtts(h2h) : 0.5;
     const h2hOver25Rate = h2h.length > 0 ? this.calcH2hOver(h2h, 2.5) : 0.5;
 
-    // 4. Extract Real Bookmaker Odds
+    // 6. Extract Real Bookmaker Odds
     const extractedOdds = this.parseOdds(bookmakerOdds);
 
     const baseFactors = {
+      sport: 'FOOTBALL',
       lambdaHome: Number(lambdaHome.toFixed(2)),
       lambdaAway: Number(lambdaAway.toFixed(2)),
       homeFormRecent: homeFormString,
@@ -136,6 +179,12 @@ export class PredictionEngineService {
       h2hMatchesAnalyzed: h2h.length,
       h2hBttsRate: Number(h2hBttsRate.toFixed(2)),
       h2hOver25Rate: Number(h2hOver25Rate.toFixed(2)),
+      isTwoLeggedTie,
+      ...(isTwoLeggedTie && {
+        leg1Score,
+        trailingTeam,
+        goalDeficit,
+      }),
     };
 
     // --- MARKET A: Match Winner (Home Win / Away Win) ---
