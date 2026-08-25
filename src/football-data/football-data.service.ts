@@ -83,7 +83,6 @@ export class FootballDataService {
         const leagueId = item.league?.id;
         const isTargetLeague = TARGET_LEAGUES.some((l) => l.id === leagueId);
 
-        // Prioritize target leagues, or accept any first-tier match if target list is sparse on weekdays
         if (!isTargetLeague && rawFixtures.length > 50) {
           continue;
         }
@@ -177,48 +176,41 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch real team statistics from API-Sports (with multi-season fallback & cache)
+   * Fetch real team statistics with intelligent multi-season fallback & cache
    */
   async getTeamStats(
     teamId: number,
     leagueId: number,
-    season = 2024,
   ): Promise<any | null> {
     const cacheKey = `${teamId}-${leagueId}`;
     if (this.statsCache.has(cacheKey)) {
       return this.statsCache.get(cacheKey);
     }
 
-    try {
-      let response = await this.client.get('/teams/statistics', {
-        params: {
-          team: teamId,
-          league: leagueId,
-          season,
-        },
-      });
-
-      let data = response.data?.response;
-
-      // If no games played in current season, fallback to previous season
-      if (!data?.fixtures?.played?.total || data.fixtures.played.total === 0) {
-        response = await this.client.get('/teams/statistics', {
+    // Try current season down to previous seasons (2024, 2023)
+    for (const season of [2024, 2023]) {
+      try {
+        const response = await this.client.get('/teams/statistics', {
           params: {
             team: teamId,
             league: leagueId,
-            season: season - 1,
+            season,
           },
         });
-        data = response.data?.response;
-      }
 
-      if (data) {
-        this.statsCache.set(cacheKey, data);
+        const data = response.data?.response;
+        const avg = parseFloat(data?.goals?.for?.average?.total || '0');
+
+        if (avg > 0.1) {
+          this.statsCache.set(cacheKey, data);
+          return data;
+        }
+      } catch (error) {
+        break; // Stop on network or rate limit error
       }
-      return data || null;
-    } catch (error) {
-      return null;
     }
+
+    return null;
   }
 
   /**

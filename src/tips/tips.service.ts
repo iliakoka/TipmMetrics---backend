@@ -112,13 +112,13 @@ export class TipsService {
 
             allCandidates.push(...candidates);
 
-            // Once we have 10+ verified high-confidence candidates, stop querying to save quota
-            if (allCandidates.length >= 12) {
+            // Once we have 8+ verified high-confidence candidates, stop querying to save quota
+            if (allCandidates.length >= 8) {
               break;
             }
 
-            // Small throttle to stay smoothly within API rate limits
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            // Pacing to stay smoothly within API rate limits (10 req/min)
+            await new Promise((resolve) => setTimeout(resolve, 300));
           } catch (err) {
             this.logger.error(
               `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
