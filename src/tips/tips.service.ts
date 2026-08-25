@@ -7,6 +7,7 @@ import { FootballDataOrgService } from '../football-data/football-data-org.servi
 import { FootballDataService } from '../football-data/football-data.service';
 import { PredictionEngineService } from '../analytics/prediction-engine.service';
 import { OddsApiService } from '../odds/odds-api.service';
+import { MatchAnalyzerService } from '../match-analysis/match-analyzer.service';
 
 @Injectable()
 export class TipsService {
@@ -21,12 +22,19 @@ export class TipsService {
     private footballDataService: FootballDataService,
     private predictionEngineService: PredictionEngineService,
     private oddsApiService: OddsApiService,
+    private matchAnalyzerService: MatchAnalyzerService,
   ) {}
 
   /**
-   * Generates top 5–7 tips for a given date using real bookmaker consensus odds.
-   * Primary: The Odds API (real bookmaker data from 40+ bookmakers)
-   * Fallback: Poisson model from football-data.org standings
+   * Generates 5–7 smart daily tips.
+   *
+   * PRIMARY PATH (smart):
+   *   1. MatchAnalyzerService: full analysis (form, H2H, standings, weather) via API-Football
+   *   2. Cross-reference with The Odds API: pick prediction where odds are in 1.65–2.20
+   *   3. Select top 5–7 by analysis score
+   *
+   * FALLBACK PATH (odds-only):
+   *   If analyzer returns nothing → use bookmaker consensus odds directly
    */
   async generateDailyTips(
     targetDate?: string,
@@ -38,147 +46,194 @@ export class TipsService {
     const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
     const endOfDay   = new Date(`${dateStr}T23:59:59.999Z`);
 
-    // 1. Check if tips already exist
+    // 1. Check existing tips
     const existingTips = await this.tipRepository.find({
       where: { matchDate: Between(startOfDay, endOfDay) },
       relations: ['fixture'],
     });
-
     if (existingTips.length > 0) {
       if (!force) {
         this.logger.log(`Already have ${existingTips.length} tips for ${dateStr}`);
         return existingTips;
       }
-      const pendingExisting = existingTips.filter((t) => t.result === TipResult.PENDING);
-      if (pendingExisting.length > 0) {
-        await this.tipRepository.remove(pendingExisting);
-        this.logger.log(`Force: removed ${pendingExisting.length} pending tips`);
+      const pending = existingTips.filter((t) => t.result === TipResult.PENDING);
+      if (pending.length > 0) {
+        await this.tipRepository.remove(pending);
+        this.logger.log(`Force: removed ${pending.length} pending tips`);
       }
     }
 
-    // 2. PRIMARY PATH — The Odds API (real bookmaker consensus)
+    // 2. PRIMARY — Smart match analysis + odds cross-reference
+    try {
+      const analyses = await this.matchAnalyzerService.analyzeMatchesForDate(dateStr);
+      if (analyses.length > 0) {
+        const tips = await this.selectAndSaveSmartTips(analyses, dateStr);
+        if (tips.length >= 3) return tips;
+        this.logger.warn(`Smart path produced only ${tips.length} tips — trying fallback`);
+      }
+    } catch (err) {
+      this.logger.error(`Smart analysis failed: ${err.message}`);
+    }
+
+    // 3. FALLBACK — Pure bookmaker consensus (Odds API only)
+    this.logger.warn(`Falling back to Odds API consensus for ${dateStr}`);
     try {
       const oddsCandidates = await this.oddsApiService.getCandidatesForDate(dateStr);
       if (oddsCandidates.length >= 3) {
-        this.logger.log(`Odds API returned ${oddsCandidates.length} candidates — using bookmaker path`);
         return this.saveOddsCandidates(oddsCandidates, dateStr);
       }
-      this.logger.warn(`Odds API returned only ${oddsCandidates.length} candidates — falling back to Poisson`);
     } catch (err) {
-      this.logger.error(`Odds API failed: ${err.message} — falling back to Poisson`);
+      this.logger.error(`Odds API fallback failed: ${err.message}`);
     }
 
-    // 3. FALLBACK PATH — Poisson model from football-data.org
-    let fixtures: Fixture[] = [];
-    const datesToTry: string[] = [dateStr];
-    for (const delta of [1, -1, 2, -2, 3]) {
-      const d = new Date(`${dateStr}T12:00:00.000Z`);
-      d.setUTCDate(d.getUTCDate() + delta);
-      datesToTry.push(d.toISOString().split('T')[0]);
+    this.logger.warn(`No tips generated for ${dateStr}`);
+    return [];
+  }
+
+  /**
+   * Cross-reference match analyses with Odds API 1.65–2.20 range,
+   * pick the prediction our model made IF bookmaker agrees and odds fit.
+   */
+  private async selectAndSaveSmartTips(
+    analyses: import('../match-analysis/match-analyzer.service').MatchAnalysis[],
+    dateStr: string,
+  ): Promise<Tip[]> {
+    const ODD_MIN = 1.65;
+    const ODD_MAX = 2.20;
+
+    interface SmartCandidate {
+      analysis: import('../match-analysis/match-analyzer.service').MatchAnalysis;
+      market: string;
+      prediction: string;
+      odds: number;
+      confidence: number;
     }
 
-    for (const d of datesToTry) {
-      if (fixtures.length >= 15) break;
-      let dayFixtures = await this.footballDataOrgService.syncFixturesForDate(d);
-      if (!dayFixtures || dayFixtures.length === 0) {
-        dayFixtures = await this.footballDataService.syncFixturesForDate(d);
-      }
-      if (!dayFixtures || dayFixtures.length === 0) {
-        const s = new Date(`${d}T00:00:00.000Z`);
-        const e = new Date(`${d}T23:59:59.999Z`);
-        dayFixtures = await this.fixtureRepository.find({ where: { matchDate: Between(s, e) } });
-      }
-      if (dayFixtures && dayFixtures.length > 0) {
-        const newOnes = dayFixtures.filter((f) => !fixtures.some((ex) => ex.id === f.id));
-        fixtures.push(...newOnes);
-        this.logger.log(`Date ${d}: added ${newOnes.length} fixtures (pool: ${fixtures.length})`);
+    const candidates: SmartCandidate[] = [];
+
+    for (const analysis of analyses) {
+      const market = analysis.predictedMarket;
+      const bookOdds = analysis.bookmakerOdds[market];
+
+      // Check if bookmaker has odds in target range for our prediction
+      if (bookOdds && bookOdds >= ODD_MIN && bookOdds <= ODD_MAX) {
+        candidates.push({
+          analysis,
+          market,
+          prediction: this.marketToLabel(market, analysis.homeTeam, analysis.awayTeam),
+          odds: bookOdds,
+          confidence: Math.min(95, analysis.totalScore + analysis.predictedProbability * 0.3),
+        });
       }
     }
 
-    if (!fixtures || fixtures.length === 0) {
-      this.logger.warn(`No fixtures found for any date around ${dateStr}`);
+    if (candidates.length === 0) {
+      this.logger.warn('No matches where our prediction aligns with 1.65-2.20 odds');
       return [];
     }
 
-    const upcoming = fixtures.filter((f) => f.status === 'NS' || new Date(f.matchDate) >= new Date());
-    const pool = upcoming.length >= 5 ? upcoming : fixtures;
-    const qualityFixtures = pool.filter((f) => this.isQualityFixture(f));
-    const sampleFixtures = qualityFixtures.slice(0, 50);
+    // Sort by confidence, max 2 per market
+    candidates.sort((a, b) => b.confidence - a.confidence);
+    const selected: SmartCandidate[] = [];
+    const marketCounts: Record<string, number> = {};
 
-    let candidates = await this.analyzeFixtures(sampleFixtures, false);
-    if (candidates.length < 5) {
-      const relaxed = await this.analyzeFixtures(sampleFixtures, true);
-      const existingIds = new Set(candidates.map((c) => c.fixture.id));
-      for (const rc of relaxed) {
-        if (!existingIds.has(rc.fixture.id)) candidates.push(rc);
-      }
-    }
-
-    const selected = this.predictionEngineService.selectDailyTips(candidates, 7);
-
-    if (selected.length === 0 && sampleFixtures.length > 0) {
-      this.logger.warn(`All thresholds failed — using last-resort generation`);
-      return this.generateLastResortTips(sampleFixtures, dateStr);
+    for (const c of candidates) {
+      const mc = marketCounts[c.market] ?? 0;
+      if (mc >= 2) continue;
+      selected.push(c);
+      marketCounts[c.market] = mc + 1;
+      if (selected.length >= 7) break;
     }
 
     if (selected.length < 5) {
-      this.logger.warn(`Only ${selected.length} Poisson tips for ${dateStr} (target: 5-7)`);
+      this.logger.warn(`Only ${selected.length} smart tips aligned with 1.65-2.20 odds`);
     }
 
     const savedTips: Tip[] = [];
     for (let i = 0; i < selected.length; i++) {
-      const item = selected[i];
+      const { analysis, market, prediction, odds, confidence } = selected[i];
       const tip = this.tipRepository.create({
-        fixtureId:       item.fixture.id,
-        matchDate:       item.fixture.matchDate,
-        leagueName:      item.fixture.leagueName,
-        homeTeamName:    item.fixture.homeTeamName,
-        awayTeamName:    item.fixture.awayTeamName,
-        market:          item.market,
-        prediction:      item.prediction,
-        odds:            item.odds,
-        confidenceScore: item.confidenceScore,
+        fixtureId:       null,
+        matchDate:       analysis.kickoffTime,
+        leagueName:      analysis.leagueName,
+        homeTeamName:    analysis.homeTeam,
+        awayTeamName:    analysis.awayTeam,
+        market,
+        prediction,
+        odds,
+        confidenceScore: Math.round(confidence * 10) / 10,
         isFree:          i === 0,
         result:          TipResult.PENDING,
-        factors:         item.factors,
+        factors: {
+          source:              'smart-analysis',
+          formHome:            analysis.homeFormString,
+          formAway:            analysis.awayFormString,
+          h2h:                 `${analysis.h2hHomeWins}W-${analysis.h2hDraws}D-${analysis.h2hAwayWins}L`,
+          expectedGoals:       analysis.expectedTotalGoals,
+          positionHome:        analysis.homePosition,
+          positionAway:        analysis.awayPosition,
+          motivationHome:      analysis.homeMotivation,
+          motivationAway:      analysis.awayMotivation,
+          weather:             analysis.weatherDescription,
+          predictedProbability: analysis.predictedProbability,
+          reasoning:           analysis.reasoning,
+        },
       });
       savedTips.push(await this.tipRepository.save(tip));
     }
 
-    this.logger.log(`Saved ${savedTips.length} Poisson tips for ${dateStr}`);
+    this.logger.log(`Saved ${savedTips.length} smart tips for ${dateStr}`);
     return savedTips;
   }
 
+  private marketToLabel(market: string, home: string, away: string): string {
+    switch (market) {
+      case 'HOME_WIN':  return `${home} To Win`;
+      case 'AWAY_WIN':  return `${away} To Win`;
+      case 'DRAW':      return 'Draw';
+      case 'OVER_2_5':  return 'Over 2.5 Goals';
+      case 'UNDER_2_5': return 'Under 2.5 Goals';
+      case 'BTTS_YES':  return 'Both Teams To Score';
+      case 'BTTS_NO':   return 'Both Teams Not To Score';
+      default: return market;
+    }
+  }
+
   /**
-   * Save Odds API candidates as tips. Selects top 7 with market variety.
-   * No fixture DB record needed — tips from Odds API are stored without a fixtureId.
+   * Save Odds API candidates as tips (fallback path — no form/H2H analysis).
    */
   private async saveOddsCandidates(
     candidates: import('../odds/odds-api.service').OddsCandidate[],
     dateStr: string,
   ): Promise<Tip[]> {
-    // Sort by confidence, enforce max 2 per market
-    candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
+    const ODD_MIN = 1.65;
+    const ODD_MAX = 2.20;
 
-    const selected: import('../odds/odds-api.service').OddsCandidate[] = [];
+    // Filter to target odds range
+    const inRange = candidates.filter(
+      (c) => c.consensusOdds >= ODD_MIN && c.consensusOdds <= ODD_MAX,
+    );
+
+    inRange.sort((a, b) => b.confidenceScore - a.confidenceScore);
+
+    const selected: typeof inRange = [];
     const marketCounts: Record<string, number> = {};
     const usedMatches = new Set<string>();
 
-    for (const c of candidates) {
+    for (const c of inRange) {
       const matchKey = `${c.homeTeam}|${c.awayTeam}`;
-      if (usedMatches.has(matchKey)) continue; // 1 tip per match
+      if (usedMatches.has(matchKey)) continue;
       const mc = marketCounts[c.market] ?? 0;
-      if (mc >= 2) continue; // max 2 per market
+      if (mc >= 2) continue;
 
       selected.push(c);
       usedMatches.add(matchKey);
       marketCounts[c.market] = mc + 1;
-
       if (selected.length >= 7) break;
     }
 
     if (selected.length < 5) {
-      this.logger.warn(`Odds API selected only ${selected.length} tips for ${dateStr} (target 5-7)`);
+      this.logger.warn(`Odds fallback: only ${selected.length} tips in 1.65-2.20 range for ${dateStr}`);
     }
 
     const savedTips: Tip[] = [];
@@ -197,17 +252,16 @@ export class TipsService {
         isFree:          i === 0,
         result:          TipResult.PENDING,
         factors: {
-          source:             'odds-api',
+          source:             'odds-api-fallback',
           impliedProbability: c.impliedProbability,
           bookmakerCount:     c.bookmakerCount,
-          sportKey:           c.sportKey,
         },
       });
       const saved = await this.tipRepository.save(tip);
       savedTips.push(saved);
     }
 
-    this.logger.log(`Saved ${savedTips.length} Odds API tips for ${dateStr}`);
+    this.logger.log(`Saved ${savedTips.length} Odds API fallback tips for ${dateStr}`);
     return savedTips;
   }
 

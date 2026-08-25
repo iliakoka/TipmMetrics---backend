@@ -7,6 +7,7 @@ import { Fixture } from '../fixtures/fixture.entity';
 import { FootballDataModule } from '../football-data/football-data.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { OddsModule } from '../odds/odds-api.module';
+import { MatchAnalysisModule } from '../match-analysis/match-analysis.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { OddsModule } from '../odds/odds-api.module';
     FootballDataModule,
     AnalyticsModule,
     OddsModule,
+    MatchAnalysisModule,
   ],
   controllers: [TipsController],
   providers: [TipsService],

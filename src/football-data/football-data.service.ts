@@ -279,6 +279,46 @@ export class FootballDataService {
   }
 
   /**
+   * Fetch league standings (position, form, points, goal difference)
+   */
+  async getStandings(leagueId: number, season: number): Promise<any[]> {
+    const cacheKey = `standings-${leagueId}-${season}`;
+    if (this.statsCache.has(cacheKey)) return this.statsCache.get(cacheKey);
+
+    const data = await this.rateLimitedGet('/standings', { league: leagueId, season });
+    const table = data?.[0]?.league?.standings?.[0] || [];
+    this.statsCache.set(cacheKey, table);
+    return table;
+  }
+
+  /**
+   * Fetch upcoming fixtures for a date without saving to DB.
+   * Returns raw API-Sports fixture objects for match analysis.
+   */
+  async getFixturesForDate(dateStr: string): Promise<any[]> {
+    return (await this.rateLimitedGet('/fixtures', { date: dateStr, status: 'NS-1H-HT-2H' })) || [];
+  }
+
+  /**
+   * Fetch last N finished matches for a team in a league (for recent form analysis)
+   */
+  async getTeamRecentMatches(teamId: number, leagueId: number, season: number, last = 5): Promise<any[]> {
+    const cacheKey = `recent-${teamId}-${leagueId}-${season}-${last}`;
+    if (this.statsCache.has(cacheKey)) return this.statsCache.get(cacheKey);
+
+    const data = await this.rateLimitedGet('/fixtures', {
+      team: teamId,
+      league: leagueId,
+      season,
+      last,
+      status: 'FT',
+    });
+    const result = data || [];
+    this.statsCache.set(cacheKey, result);
+    return result;
+  }
+
+  /**
    * Update final scores for finished matches
    */
   async updateFinishedFixtures(dateStr: string): Promise<Fixture[]> {
@@ -286,12 +326,10 @@ export class FootballDataService {
       const finishedData =
         (await this.rateLimitedGet('/fixtures', { date: dateStr, status: 'FT' })) || [];
       const updated: Fixture[] = [];
-
       for (const item of finishedData) {
         const fixture = await this.fixtureRepository.findOne({
           where: { apiFixtureId: item.fixture?.id },
         });
-
         if (fixture) {
           fixture.status = item.fixture?.status?.short;
           fixture.homeGoals = item.goals?.home ?? null;
@@ -299,9 +337,8 @@ export class FootballDataService {
           updated.push(await this.fixtureRepository.save(fixture));
         }
       }
-
       return updated;
-    } catch (error) {
+    } catch {
       return [];
     }
   }
