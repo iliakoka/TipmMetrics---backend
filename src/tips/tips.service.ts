@@ -241,18 +241,14 @@ export class TipsService {
     const savedTips: Tip[] = [];
     for (let i = 0; i < selected.length; i++) {
       const c = selected[i];
-      const [homeLogo, awayLogo] = await Promise.all([
-        this.footballDataService.searchTeamLogo(c.homeTeam),
-        this.footballDataService.searchTeamLogo(c.awayTeam),
-      ]);
       const tip = this.tipRepository.create({
         fixtureId:       null,
         matchDate:       c.commenceTime,
         leagueName:      c.leagueName,
         homeTeamName:    c.homeTeam,
         awayTeamName:    c.awayTeam,
-        homeTeamLogo:    homeLogo,
-        awayTeamLogo:    awayLogo,
+        homeTeamLogo:    null,
+        awayTeamLogo:    null,
         market:          c.market,
         prediction:      c.prediction,
         odds:            c.consensusOdds,
@@ -564,33 +560,6 @@ export class TipsService {
   }
 
   /**
-   * Automatically backfill missing logos for tips from cached fixtures or API-Football
-   */
-  private async ensureLogosForTips(tips: Tip[]): Promise<Tip[]> {
-    for (const tip of tips) {
-      let updated = false;
-      if (!tip.homeTeamLogo) {
-        const logo = await this.footballDataService.searchTeamLogo(tip.homeTeamName);
-        if (logo) {
-          tip.homeTeamLogo = logo;
-          updated = true;
-        }
-      }
-      if (!tip.awayTeamLogo) {
-        const logo = await this.footballDataService.searchTeamLogo(tip.awayTeamName);
-        if (logo) {
-          tip.awayTeamLogo = logo;
-          updated = true;
-        }
-      }
-      if (updated) {
-        await this.tipRepository.save(tip).catch(() => {});
-      }
-    }
-    return tips;
-  }
-
-  /**
    * Get Active / Today's tips for the Tips page
    */
   async getTodayTips(): Promise<Tip[]> {
@@ -616,10 +585,6 @@ export class TipsService {
       todayTips = await this.generateDailyTips(todayStr);
     }
 
-    if (todayTips && todayTips.length > 0) {
-      todayTips = await this.ensureLogosForTips(todayTips);
-    }
-
     return todayTips || [];
   }
 
@@ -638,10 +603,6 @@ export class TipsService {
       skip: (page - 1) * limit,
       relations: ['fixture'],
     });
-
-    if (tips && tips.length > 0) {
-      await this.ensureLogosForTips(tips);
-    }
 
     return { tips, total };
   }
