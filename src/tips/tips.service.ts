@@ -126,37 +126,6 @@ export class TipsService {
           }
         }
       }
-
-      // If football API is out of quota today, inject the verified football matches from database fixtures
-      if (allCandidates.filter(c => !c.fixture.leagueName.includes('🏀')).length === 0) {
-        const dbFootballFixtures = await this.fixtureRepository.find({
-          where: { matchDate: Between(startOfDay, endOfDay) },
-        });
-
-        for (const f of dbFootballFixtures) {
-          if (f.leagueName.includes('🏀')) continue;
-          if (f.homeTeamName === 'Bologna') {
-            allCandidates.push({
-              fixture: f,
-              market: 'HOME_WIN',
-              prediction: 'Bologna To Win',
-              odds: 2.15,
-              confidenceScore: 65.9,
-              factors: { sport: 'FOOTBALL', matchType: 'Serie A', lambdaHome: 1.77, lambdaAway: 0.93 },
-            });
-          }
-          if (f.homeTeamName === 'Osasuna') {
-            allCandidates.push({
-              fixture: f,
-              market: 'HOME_WIN',
-              prediction: 'Osasuna To Win',
-              odds: 1.80,
-              confidenceScore: 65.1,
-              factors: { sport: 'FOOTBALL', matchType: 'La Liga', lambdaHome: 1.92, lambdaAway: 0.91 },
-            });
-          }
-        }
-      }
     } catch (err) {
       this.logger.warn(`Football processing skipped: ${err.message}`);
     }
@@ -245,14 +214,17 @@ export class TipsService {
   }
 
   /**
-   * Settle pending tips against final match results
+   * Settle pending tips against final match results (Football & Basketball)
    */
   async settleDailyTips(targetDate?: string): Promise<{ settled: number; won: number; lost: number }> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
     this.logger.log(`Settling tips for date: ${dateStr}`);
 
-    // Update finished fixture scores
-    await this.footballDataService.updateFinishedFixtures(dateStr);
+    // Update finished fixture scores for Football & Basketball
+    await Promise.all([
+      this.footballDataService.updateFinishedFixtures(dateStr),
+      this.basketballDataService.updateFinishedGames(dateStr, this.fixtureRepository),
+    ]);
 
     const pendingTips = await this.tipRepository.find({
       where: {
@@ -280,14 +252,49 @@ export class TipsService {
         case 'BTTS':
           won = hg > 0 && ag > 0;
           break;
+        case 'BTTS_NO':
+          won = hg === 0 || ag === 0;
+          break;
         case 'OVER_2_5':
           won = hg + ag > 2.5;
+          break;
+        case 'UNDER_2_5':
+          won = hg + ag < 2.5;
           break;
         case 'HOME_WIN':
           won = hg > ag;
           break;
+        case 'AWAY_WIN':
+          won = ag > hg;
+          break;
         case 'DOUBLE_CHANCE':
-          won = hg >= ag;
+          if (tip.prediction.includes('1X') || tip.prediction.includes(fixture.homeTeamName)) {
+            won = hg >= ag;
+          } else {
+            won = ag >= hg;
+          }
+          break;
+        case 'OVER_POINTS':
+        case 'TOTAL_POINTS': {
+          const line = tip.factors?.line || parseFloat(tip.prediction.replace(/[^0-9.]/g, '')) || 158.5;
+          if (tip.prediction.toLowerCase().includes('under')) {
+            won = hg + ag < line;
+          } else {
+            won = hg + ag > line;
+          }
+          break;
+        }
+        case 'UNDER_POINTS': {
+          const line = tip.factors?.line || parseFloat(tip.prediction.replace(/[^0-9.]/g, '')) || 158.5;
+          won = hg + ag < line;
+          break;
+        }
+        case 'MONEYLINE':
+          if (tip.prediction.includes(fixture.homeTeamName)) {
+            won = hg > ag;
+          } else {
+            won = ag > hg;
+          }
           break;
         default:
           won = false;
@@ -313,111 +320,115 @@ export class TipsService {
 
   /**
    * Get Active / Today's tips for the Tips page
+   * Auto-generates today's tips if none exist yet!
    */
   async getTodayTips(): Promise<Tip[]> {
-    // 1. Look for active pending tips first (upcoming games to follow)
-    let tips = await this.tipRepository.find({
-      where: { result: TipResult.PENDING },
-      order: { matchDate: 'ASC', isFree: 'DESC', confidenceScore: 'DESC' },
+    const todayStr = new Date().toISOString().split('T')[0];
+    const startOfToday = new Date(`${todayStr}T00:00:00.000Z`);
+    const endOfToday = new Date(`${todayStr}T23:59:59.999Z`);
+
+    // 1. Settle past finished matches in the background
+    this.settleDailyTips().catch((err) =>
+      this.logger.warn(`Background settlement error: ${err.message}`),
+    );
+
+    // 2. Fetch today's generated tips
+    let todayTips = await this.tipRepository.find({
+      where: {
+        matchDate: Between(startOfToday, endOfToday),
+      },
+      order: { isFree: 'DESC', confidenceScore: 'DESC' },
+      relations: ['fixture'],
     });
 
-    // 2. If no pending tips, check today's date window
-    if (tips.length === 0) {
-      const today = new Date().toISOString().split('T')[0];
-      const startOfDay = new Date(`${today}T00:00:00.000Z`);
-      const endOfDay = new Date(`${today}T23:59:59.999Z`);
-
-      tips = await this.tipRepository.find({
-        where: { matchDate: Between(startOfDay, endOfDay) },
-        order: { isFree: 'DESC', confidenceScore: 'DESC' },
-      });
-
-      // 3. Auto-trigger generation if none exists at all
-      if (tips.length === 0) {
-        tips = await this.generateDailyTips(today);
-      }
+    // 3. If no tips exist for today yet, auto-generate them!
+    if (todayTips.length === 0) {
+      this.logger.log(`No tips found for ${todayStr}. Auto-generating today's daily tips...`);
+      todayTips = await this.generateDailyTips(todayStr);
     }
 
-    return tips;
+    if (todayTips.length > 0) {
+      return todayTips;
+    }
+
+    // 4. Fallback to any pending tips
+    return this.tipRepository.find({
+      where: { result: TipResult.PENDING },
+      order: { matchDate: 'ASC', isFree: 'DESC' },
+      relations: ['fixture'],
+    });
   }
 
   /**
-   * Get tip history with pagination
+   * Get Tips History (for Statistics table on frontend)
    */
-  async getHistory(page = 1, limit = 20): Promise<{ data: Tip[]; total: number; page: number; limit: number }> {
-    const [data, total] = await this.tipRepository.findAndCount({
+  async getHistory(page = 1, limit = 20): Promise<{ tips: Tip[]; total: number }> {
+    const [tips, total] = await this.tipRepository.findAndCount({
       where: [
         { result: TipResult.WON },
         { result: TipResult.LOST },
-        { result: TipResult.VOID },
       ],
-      order: { matchDate: 'DESC' },
-      skip: (page - 1) * limit,
+      order: { matchDate: 'DESC', settledAt: 'DESC' },
       take: limit,
+      skip: (page - 1) * limit,
+      relations: ['fixture'],
     });
 
-    return { data, total, page, limit };
+    return { tips, total };
+  }
+
+  async getTipsHistory(limit = 50, page = 1): Promise<{ tips: Tip[]; total: number }> {
+    return this.getHistory(page, limit);
   }
 
   /**
-   * Compute comprehensive aggregate statistics & performance ROI
+   * Get Aggregated Analytics & ROI Performance Stats
    */
-  async getStats(): Promise<Record<string, any>> {
-    const settledTips = await this.tipRepository.find({
-      where: [{ result: TipResult.WON }, { result: TipResult.LOST }],
-    });
+  async getStats(): Promise<{
+    totalTips: number;
+    wonTips: number;
+    lostTips: number;
+    pendingTips: number;
+    winRate: number;
+    totalProfitUnits: number;
+    roiPercentage: number;
+  }> {
+    const allTips = await this.tipRepository.find();
 
-    const total = settledTips.length;
-    if (total === 0) {
-      return {
-        totalTips: 0,
-        wonTips: 0,
-        lostTips: 0,
-        winRate: '0.00%',
-        averageOdds: '0.00',
-        profitUnits: '0.00',
-        roi: '0.00%',
-        marketStats: {},
-      };
-    }
+    const wonTips = allTips.filter((t) => t.result === TipResult.WON).length;
+    const lostTips = allTips.filter((t) => t.result === TipResult.LOST).length;
+    const pendingTips = allTips.filter((t) => t.result === TipResult.PENDING).length;
+    const settledTips = wonTips + lostTips;
 
-    const wonTips = settledTips.filter((t) => t.result === TipResult.WON);
-    const lostTips = settledTips.filter((t) => t.result === TipResult.LOST);
+    const winRate =
+      settledTips > 0 ? Number(((wonTips / settledTips) * 100).toFixed(1)) : 0;
 
-    const winRate = ((wonTips.length / total) * 100).toFixed(2) + '%';
-
-    const totalOdds = settledTips.reduce((sum, t) => sum + Number(t.odds), 0);
-    const averageOdds = (totalOdds / total).toFixed(2);
-
-    // Assuming flat 1 unit stake per tip
-    const totalReturn = wonTips.reduce((sum, t) => sum + Number(t.odds), 0);
-    const profitUnits = (totalReturn - total).toFixed(2);
-    const roi = (((totalReturn - total) / total) * 100).toFixed(2) + '%';
-
-    // Market Breakdown
-    const marketStats: Record<string, { total: number; won: number; winRate: string }> = {};
-    for (const t of settledTips) {
-      if (!marketStats[t.market]) {
-        marketStats[t.market] = { total: 0, won: 0, winRate: '0%' };
+    let totalProfitUnits = 0;
+    for (const tip of allTips) {
+      if (tip.result === TipResult.WON) {
+        totalProfitUnits += tip.odds - 1;
+      } else if (tip.result === TipResult.LOST) {
+        totalProfitUnits -= 1;
       }
-      marketStats[t.market].total++;
-      if (t.result === TipResult.WON) marketStats[t.market].won++;
     }
 
-    for (const m in marketStats) {
-      const st = marketStats[m];
-      st.winRate = ((st.won / st.total) * 100).toFixed(1) + '%';
-    }
+    const roiPercentage =
+      settledTips > 0
+        ? Number(((totalProfitUnits / settledTips) * 100).toFixed(1))
+        : 0;
 
     return {
-      totalTips: total,
-      wonTips: wonTips.length,
-      lostTips: lostTips.length,
+      totalTips: allTips.length,
+      wonTips,
+      lostTips,
+      pendingTips,
       winRate,
-      averageOdds,
-      profitUnits,
-      roi,
-      marketStats,
+      totalProfitUnits: Number(totalProfitUnits.toFixed(2)),
+      roiPercentage,
     };
+  }
+
+  async getAnalyticsStats() {
+    return this.getStats();
   }
 }

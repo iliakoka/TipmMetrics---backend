@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Repository } from 'typeorm';
 import axios, { AxiosInstance } from 'axios';
+import { Fixture } from '../fixtures/fixture.entity';
 
 export const TARGET_BASKETBALL_LEAGUES = [
   { id: 12, name: 'NBA', country: 'USA' },
@@ -24,7 +26,7 @@ export class BasketballDataService {
   private oddsCache = new Map<number, any>();
 
   constructor(private configService: ConfigService) {
-    const apiKey = this.configService.get<string>('FOOTBALL_API_KEY'); // Same API-Sports key
+    const apiKey = this.configService.get<string>('FOOTBALL_API_KEY');
     const baseURL = 'https://v1.basketball.api-sports.io';
 
     this.client = axios.create({
@@ -87,9 +89,12 @@ export class BasketballDataService {
   }
 
   /**
-   * Update finished game scores
+   * Update finished game scores in database
    */
-  async getFinishedGames(dateStr: string): Promise<any[]> {
+  async updateFinishedGames(
+    dateStr: string,
+    fixtureRepository: Repository<Fixture>,
+  ): Promise<void> {
     try {
       const response = await this.client.get('/games', {
         params: {
@@ -97,10 +102,25 @@ export class BasketballDataService {
         },
       });
 
-      const games = response.data?.response || [];
-      return games.filter((g) => g.status?.short === 'FT' || g.status?.short === 'AOT');
+      const finishedGames = response.data?.response || [];
+      for (const item of finishedGames) {
+        if (item.status?.short === 'FT' || item.status?.short === 'AOT') {
+          const fixture = await fixtureRepository.findOne({
+            where: { apiFixtureId: item.id },
+          });
+
+          if (fixture) {
+            fixture.status = item.status?.short;
+            fixture.homeGoals = item.scores?.home?.total ?? null;
+            fixture.awayGoals = item.scores?.away?.total ?? null;
+            await fixtureRepository.save(fixture);
+          }
+        }
+      }
     } catch (error) {
-      return [];
+      this.logger.error(
+        `Error updating finished basketball games: ${error.message}`,
+      );
     }
   }
 }
