@@ -365,14 +365,19 @@ export class PredictionEngineService {
 
     const selected: CandidateTip[] = [];
     const usedFixtureIds = new Set<string>();
+    const marketCounts: Record<string, number> = {};
+    const maxPerMarket = 2; // No more than 2 tips of the same market type
 
     for (const cand of candidates) {
-      if (!usedFixtureIds.has(cand.fixture.id)) {
-        selected.push(cand);
-        usedFixtureIds.add(cand.fixture.id);
+      if (usedFixtureIds.has(cand.fixture.id)) continue;
+      const marketCount = marketCounts[cand.market] ?? 0;
+      if (marketCount >= maxPerMarket) continue;
 
-        if (selected.length >= targetCount) break;
-      }
+      selected.push(cand);
+      usedFixtureIds.add(cand.fixture.id);
+      marketCounts[cand.market] = marketCount + 1;
+
+      if (selected.length >= targetCount) break;
     }
 
     return selected;

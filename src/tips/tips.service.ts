@@ -98,8 +98,13 @@ export class TipsService {
     );
     const pool = upcoming.length >= 5 ? upcoming : fixtures;
 
-    // Sample up to 50 fixtures for analysis
-    const sampleFixtures = pool.slice(0, 50);
+    // Filter out non-football sports, youth/reserve/women's competitions,
+    // and low-quality leagues that produce meaningless tips
+    const qualityFixtures = pool.filter((f) => this.isQualityFixture(f));
+    this.logger.log(`Quality fixtures after filtering: ${qualityFixtures.length} of ${pool.length}`);
+
+    // Sample up to 50 quality fixtures for analysis
+    const sampleFixtures = qualityFixtures.slice(0, 50);
 
     // 4. Analyze all sampled fixtures in strict mode — no early exit
     const allCandidates = await this.analyzeFixtures(sampleFixtures, false);
@@ -244,6 +249,38 @@ export class TipsService {
     }
 
     return candidates;
+  }
+
+  /**
+   * Returns true only for real senior men's football matches worth tipping.
+   * Blocks: basketball, other sports, youth/U21-U23, women's, reserve/B teams.
+   */
+  private isQualityFixture(fixture: Fixture): boolean {
+    const league = (fixture.leagueName || '').toLowerCase();
+    const home   = (fixture.homeTeamName || '').toLowerCase();
+    const away   = (fixture.awayTeamName || '').toLowerCase();
+
+    // Block non-football sports (basketball emoji, NBA, NFL, etc.)
+    if (fixture.leagueName?.includes('🏀')) return false;
+    if (fixture.leagueName?.includes('🏈')) return false;
+    if (league.includes('basketball') || league.includes('nba') || league.includes('nfl')) return false;
+
+    // Block youth / reserve competitions
+    const youthPattern = /\b(u\d{2}|youth|reserve|b team|ii$| b$| ii |junior|u18|u19|u20|u21|u22|u23)\b/i;
+    if (youthPattern.test(league) || youthPattern.test(home) || youthPattern.test(away)) return false;
+
+    // Block women's competitions
+    if (league.includes(' w ') || league.includes(' women') || league.includes("women's")
+        || home.endsWith(' w') || away.endsWith(' w')) return false;
+
+    // Block clearly low-quality or obscure cups
+    const blockedLeagues = [
+      'premier league cup', 'efl trophy', 'papa john', 'checkratrade',
+      'friendlies', 'friendly', 'pre-season', 'preseason', 'world cup qualification - concacaf',
+    ];
+    if (blockedLeagues.some((b) => league.includes(b))) return false;
+
+    return true;
   }
 
 
