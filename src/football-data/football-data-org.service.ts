@@ -50,15 +50,15 @@ export class FootballDataOrgService {
   }
 
   /**
-   * Fast request executor with lightweight rate limiter.
-   * Football-Data.org free tier = 10 requests/minute.
-   * We pace at 700ms (≈85 req/min peak) which keeps us safely under the limit
-   * even with concurrent requests and DB saves between calls.
+   * Request executor with header-based throttling as recommended by Football-Data.org.
+   * Reads X-Requests-Available-Minute and X-RequestCounter-Reset headers to automatically
+   * pause when approaching the rate limit instead of using a fixed delay.
    */
   private async fastGet(endpoint: string, params: any = {}): Promise<any> {
+    // Minimum gap between requests (ms) as a safety floor
+    const minDelay = 700;
     const now = Date.now();
     const timeSinceLast = now - this.lastRequestTime;
-    const minDelay = 700;
     if (timeSinceLast < minDelay) {
       await new Promise((resolve) => setTimeout(resolve, minDelay - timeSinceLast));
     }
@@ -66,9 +66,29 @@ export class FootballDataOrgService {
 
     try {
       const res = await this.client.get(endpoint, { params });
+
+      // Read rate-limit headers recommended by Football-Data.org
+      const remaining = parseInt(res.headers['x-requests-available-minute'] ?? '99', 10);
+      const resetSeconds = parseInt(res.headers['x-requestcounter-reset'] ?? '0', 10);
+
+      if (remaining <= 2 && resetSeconds > 0) {
+        const waitMs = (resetSeconds + 1) * 1000;
+        this.logger.warn(
+          `Rate limit low (${remaining} left). Waiting ${waitMs}ms for reset...`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
       return res.data || null;
     } catch (err) {
-      this.logger.warn(`Football-Data.org call to ${endpoint} failed: ${err.message}`);
+      // On 429, wait for the reset window then allow retry on next call
+      if (err.response?.status === 429) {
+        const retryAfter = parseInt(err.response.headers['retry-after'] ?? '60', 10);
+        this.logger.warn(`429 Too Many Requests — waiting ${retryAfter}s`);
+        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+      } else {
+        this.logger.warn(`Football-Data.org call to ${endpoint} failed: ${err.message}`);
+      }
       return null;
     }
   }
