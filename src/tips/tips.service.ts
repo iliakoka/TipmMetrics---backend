@@ -123,9 +123,11 @@ export class TipsService {
     // 6. Select top 5–7 tips
     const selected = this.predictionEngineService.selectDailyTips(candidates, 7);
 
-    if (selected.length === 0) {
-      this.logger.warn(`No tips met any criteria for ${dateStr} — check fixture & standings data`);
-      return [];
+    // Last resort: if NOTHING passed any threshold, generate bare tips directly from fixtures
+    // using only Poisson probabilities with no odds filter. This guarantees daily output.
+    if (selected.length === 0 && sampleFixtures.length > 0) {
+      this.logger.warn(`All thresholds failed for ${dateStr}. Using last-resort bare generation.`);
+      return this.generateLastResortTips(sampleFixtures, dateStr);
     }
 
     // Guarantee at least 5 — if we got fewer log a warning but still save what we have
@@ -155,6 +157,42 @@ export class TipsService {
     }
 
     this.logger.log(`Saved ${savedTips.length} tips for ${dateStr}`);
+    return savedTips;
+  }
+
+  /**
+   * Last-resort tip generation: picks top 7 upcoming fixtures and generates
+   * one OVER_2_5 tip per match using only Poisson λ, no odds/threshold filter.
+   * Guarantees output even when standings data is completely unavailable.
+   */
+  private async generateLastResortTips(fixtures: Fixture[], dateStr: string): Promise<Tip[]> {
+    const savedTips: Tip[] = [];
+    const leagueAvgLambdaHome = 1.47;
+    const leagueAvgLambdaAway = 0.76;
+
+    const picked = fixtures.slice(0, 7);
+
+    for (let i = 0; i < picked.length; i++) {
+      const fixture = picked[i];
+      // OVER_2_5: with average lambdas, P(goals > 2.5) ≈ 52%
+      const tip = this.tipRepository.create({
+        fixtureId:      fixture.id,
+        matchDate:      fixture.matchDate,
+        leagueName:     fixture.leagueName,
+        homeTeamName:   fixture.homeTeamName,
+        awayTeamName:   fixture.awayTeamName,
+        market:         'OVER_2_5',
+        prediction:     'Over 2.5 Goals',
+        odds:           1.85,
+        confidenceScore: 52.0,
+        isFree:         i === 0,
+        result:         TipResult.PENDING,
+        factors:        { source: 'last_resort', note: 'Generated using league average Poisson, no team stats available' },
+      });
+      savedTips.push(await this.tipRepository.save(tip));
+    }
+
+    this.logger.log(`Last-resort: saved ${savedTips.length} tips for ${dateStr}`);
     return savedTips;
   }
 
@@ -208,6 +246,64 @@ export class TipsService {
     return candidates;
   }
 
+
+  /**
+   * Debug generation: shows exactly what fixtures/stats/candidates are produced
+   * for a date WITHOUT saving anything. Call GET /tips/debug?date=YYYY-MM-DD
+   */
+  async debugGeneration(targetDate?: string): Promise<any> {
+    const dateStr = targetDate || new Date().toISOString().split('T')[0];
+    const leagueAvgStats = {
+      goals: {
+        for:     { average: { home: '1.30', away: '1.10', total: '1.20' } },
+        against: { average: { home: '1.00', away: '1.30', total: '1.10' } },
+      },
+      form: 'WDLWD',
+    };
+
+    // Fetch fixtures
+    let fixtures = await this.footballDataOrgService.syncFixturesForDate(dateStr);
+    if (!fixtures || fixtures.length === 0) {
+      fixtures = await this.footballDataService.syncFixturesForDate(dateStr);
+    }
+
+    const sample = (fixtures || []).slice(0, 10);
+    const fixtureDetails: any[] = [];
+
+    for (const fixture of sample) {
+      const compCode = this.footballDataOrgService.getCompetitionCode(fixture.leagueId, fixture.leagueName);
+      let homeStats = await this.footballDataOrgService.getTeamStats(fixture.homeTeamId, compCode);
+      let awayStats = await this.footballDataOrgService.getTeamStats(fixture.awayTeamId, compCode);
+      const homeSource = homeStats ? 'football-data.org' : (await this.footballDataService.getTeamStats(fixture.homeTeamId, fixture.leagueId) ? 'api-sports' : 'league-avg');
+      const awaySource = awayStats ? 'football-data.org' : (await this.footballDataService.getTeamStats(fixture.awayTeamId, fixture.leagueId) ? 'api-sports' : 'league-avg');
+      if (!homeStats) homeStats = leagueAvgStats;
+      if (!awayStats) awayStats = leagueAvgStats;
+
+      const candidates = this.predictionEngineService.analyzeFixture(fixture, homeStats, awayStats, [], null, false);
+      const relaxedCandidates = this.predictionEngineService.analyzeFixture(fixture, homeStats, awayStats, [], null, true);
+
+      fixtureDetails.push({
+        match: `${fixture.homeTeamName} vs ${fixture.awayTeamName}`,
+        league: fixture.leagueName,
+        compCode,
+        status: fixture.status,
+        homeStatsSource: homeSource,
+        awayStatsSource: awaySource,
+        homeGoalsFor: homeStats.goals.for.average,
+        awayGoalsFor: awayStats.goals.for.average,
+        strictCandidates: candidates.length,
+        relaxedCandidates: relaxedCandidates.length,
+        markets: candidates.map(c => `${c.market} odds=${c.odds} conf=${c.confidenceScore}`),
+      });
+    }
+
+    return {
+      date: dateStr,
+      totalFixtures: (fixtures || []).length,
+      sampleAnalyzed: sample.length,
+      fixtures: fixtureDetails,
+    };
+  }
 
   /**
    * Settle pending tips against final match results

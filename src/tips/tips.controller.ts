@@ -40,6 +40,14 @@ export class TipsController {
   }
 
   /**
+   * GET /tips/debug — returns diagnostic info for a date without saving tips
+   */
+  @Get('debug')
+  async debugGeneration(@Query('date') date?: string) {
+    return this.tipsService.debugGeneration(date);
+  }
+
+  /**
    * POST /tips/generate — manually trigger tip generation with optional force refresh
    */
   @Post('generate')
