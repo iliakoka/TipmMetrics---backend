@@ -590,6 +590,7 @@ export class TipsService {
       where: [
         { result: TipResult.WON },
         { result: TipResult.LOST },
+        { result: TipResult.VOID },
       ],
       order: { matchDate: 'DESC', settledAt: 'DESC' },
       take: limit,
@@ -611,8 +612,11 @@ export class TipsService {
     totalTips: number;
     wonTips: number;
     lostTips: number;
+    voidTips: number;
     pendingTips: number;
     winRate: number;
+    averageOdds: number;
+    record: string;
     totalProfitUnits: number;
     roiPercentage: number;
   }> {
@@ -620,20 +624,31 @@ export class TipsService {
 
     const wonTips = allTips.filter((t) => t.result === TipResult.WON).length;
     const lostTips = allTips.filter((t) => t.result === TipResult.LOST).length;
+    const voidTips = allTips.filter((t) => t.result === TipResult.VOID).length;
     const pendingTips = allTips.filter((t) => t.result === TipResult.PENDING).length;
     const settledTips = wonTips + lostTips;
 
     const winRate =
       settledTips > 0 ? Number(((wonTips / settledTips) * 100).toFixed(1)) : 0;
 
+    let totalOdds = 0;
+    let oddsCount = 0;
     let totalProfitUnits = 0;
+
     for (const tip of allTips) {
+      if (tip.odds) {
+        totalOdds += Number(tip.odds);
+        oddsCount++;
+      }
       if (tip.result === TipResult.WON) {
-        totalProfitUnits += tip.odds - 1;
+        totalProfitUnits += Number(tip.odds) - 1;
       } else if (tip.result === TipResult.LOST) {
         totalProfitUnits -= 1;
       }
     }
+
+    const averageOdds =
+      oddsCount > 0 ? Number((totalOdds / oddsCount).toFixed(2)) : 0;
 
     const roiPercentage =
       settledTips > 0
@@ -644,8 +659,11 @@ export class TipsService {
       totalTips: allTips.length,
       wonTips,
       lostTips,
+      voidTips,
       pendingTips,
       winRate,
+      averageOdds,
+      record: `${wonTips}W - ${lostTips}L`,
       totalProfitUnits: Number(totalProfitUnits.toFixed(2)),
       roiPercentage,
     };
