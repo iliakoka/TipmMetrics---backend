@@ -40,15 +40,29 @@ export const TARGET_LEAGUES = [
   { id: 207, name: 'Super League', country: 'Switzerland' },
 ];
 
+// Major domestic league fallbacks for Cup/European ties
+const DOMESTIC_LEAGUE_MAP: Record<number, number[]> = {
+  48: [39, 40], // EFL Cup -> Premier League, Championship
+  45: [39, 40], // FA Cup -> Premier League, Championship
+  143: [140],   // Copa del Rey -> La Liga
+  137: [135],   // Coppa Italia -> Serie A
+  81: [78],     // DFB Pokal -> Bundesliga
+  66: [61],     // Coupe de France -> Ligue 1
+  2: [39, 140, 135, 78, 61, 88, 94, 179, 103], // Champions League
+  3: [39, 140, 135, 78, 61, 88, 94, 179, 103], // Europa League
+  848: [39, 140, 135, 78, 61, 88, 94, 179, 103], // Conference League
+};
+
 @Injectable()
 export class FootballDataService {
   private readonly logger = new Logger(FootballDataService.name);
   private client: AxiosInstance;
 
-  // In-memory caches to strictly respect rate limits and conserve quota
+  // In-memory caches
   private statsCache = new Map<string, any>();
   private h2hCache = new Map<string, any[]>();
   private oddsCache = new Map<number, any>();
+  private lastRequestTime = 0;
 
   constructor(
     private configService: ConfigService,
@@ -70,73 +84,85 @@ export class FootballDataService {
   }
 
   /**
+   * Paced API request executor to strictly stay under rate limits
+   */
+  private async rateLimitedGet(endpoint: string, params: any = {}): Promise<any> {
+    const now = Date.now();
+    const timeSinceLast = now - this.lastRequestTime;
+    const minDelay = 650; // ~9 requests/min max to prevent 429 errors
+    if (timeSinceLast < minDelay) {
+      await new Promise((resolve) => setTimeout(resolve, minDelay - timeSinceLast));
+    }
+    this.lastRequestTime = Date.now();
+
+    try {
+      const res = await this.client.get(endpoint, { params });
+      if (res.data?.errors?.rateLimit) {
+        this.logger.warn(`API-Sports Rate Limit: ${res.data.errors.rateLimit}`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return null;
+      }
+      return res.data?.response || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
    * Fetch and save all fixtures for a given date across target leagues
    */
   async syncFixturesForDate(dateStr: string): Promise<Fixture[]> {
     this.logger.log(`Syncing fixtures for date: ${dateStr}`);
 
-    try {
-      const response = await this.client.get('/fixtures', {
-        params: {
-          date: dateStr,
-        },
-      });
+    const rawFixtures = (await this.rateLimitedGet('/fixtures', { date: dateStr })) || [];
+    const savedFixtures: Fixture[] = [];
 
-      const rawFixtures = response.data?.response || [];
-      const savedFixtures: Fixture[] = [];
+    for (const item of rawFixtures) {
+      const leagueId = item.league?.id;
+      const leagueNameLower = item.league?.name?.toLowerCase() || '';
 
-      for (const item of rawFixtures) {
-        const leagueId = item.league?.id;
-        const leagueNameLower = item.league?.name?.toLowerCase() || '';
+      const isTargetLeague =
+        TARGET_LEAGUES.some((l) => l.id === leagueId) ||
+        leagueNameLower.includes('league cup') ||
+        leagueNameLower.includes('efl cup') ||
+        leagueNameLower.includes('champions league') ||
+        leagueNameLower.includes('copa');
 
-        const isTargetLeague =
-          TARGET_LEAGUES.some((l) => l.id === leagueId) ||
-          leagueNameLower.includes('league cup') ||
-          leagueNameLower.includes('efl cup') ||
-          leagueNameLower.includes('champions league') ||
-          leagueNameLower.includes('copa');
-
-        if (!isTargetLeague && rawFixtures.length > 50) {
-          continue;
-        }
-
-        const apiFixtureId = item.fixture?.id;
-        let fixture = await this.fixtureRepository.findOne({
-          where: { apiFixtureId },
-        });
-
-        if (!fixture) {
-          fixture = this.fixtureRepository.create();
-        }
-
-        fixture.apiFixtureId = apiFixtureId;
-        fixture.leagueId = leagueId;
-        fixture.leagueName = item.league?.name || 'Unknown League';
-        fixture.leagueCountry = item.league?.country || '';
-        fixture.homeTeamId = item.teams?.home?.id;
-        fixture.homeTeamName = item.teams?.home?.name;
-        fixture.homeTeamLogo = item.teams?.home?.logo;
-        fixture.awayTeamId = item.teams?.away?.id;
-        fixture.awayTeamName = item.teams?.away?.name;
-        fixture.awayTeamLogo = item.teams?.away?.logo;
-        fixture.matchDate = new Date(item.fixture?.date);
-        fixture.status = item.fixture?.status?.short || 'NS';
-        fixture.homeGoals = item.goals?.home ?? null;
-        fixture.awayGoals = item.goals?.away ?? null;
-
-        savedFixtures.push(await this.fixtureRepository.save(fixture));
+      if (!isTargetLeague && rawFixtures.length > 50) {
+        continue;
       }
 
-      this.logger.log(
-        `Synced ${savedFixtures.length} target fixtures for ${dateStr}`,
-      );
-      return savedFixtures;
-    } catch (error) {
-      this.logger.error(
-        `Failed to sync fixtures for ${dateStr}: ${error.message}`,
-      );
-      return this.fixtureRepository.find();
+      const apiFixtureId = item.fixture?.id;
+      let fixture = await this.fixtureRepository.findOne({
+        where: { apiFixtureId },
+      });
+
+      if (!fixture) {
+        fixture = this.fixtureRepository.create();
+      }
+
+      fixture.apiFixtureId = apiFixtureId;
+      fixture.leagueId = leagueId;
+      fixture.leagueName = item.league?.name || 'Unknown League';
+      fixture.leagueCountry = item.league?.country || '';
+      fixture.homeTeamId = item.teams?.home?.id;
+      fixture.homeTeamName = item.teams?.home?.name;
+      fixture.homeTeamLogo = item.teams?.home?.logo;
+      fixture.awayTeamId = item.teams?.away?.id;
+      fixture.awayTeamName = item.teams?.away?.name;
+      fixture.awayTeamLogo = item.teams?.away?.logo;
+      fixture.matchDate = new Date(item.fixture?.date);
+      fixture.status = item.fixture?.status?.short || 'NS';
+      fixture.homeGoals = item.goals?.home ?? null;
+      fixture.awayGoals = item.goals?.away ?? null;
+
+      savedFixtures.push(await this.fixtureRepository.save(fixture));
     }
+
+    this.logger.log(
+      `Synced ${savedFixtures.length} target fixtures for ${dateStr}`,
+    );
+    return savedFixtures;
   }
 
   /**
@@ -147,21 +173,11 @@ export class FootballDataService {
       return this.oddsCache.get(apiFixtureId);
     }
 
-    try {
-      const response = await this.client.get('/odds', {
-        params: {
-          fixture: apiFixtureId,
-        },
-      });
-
-      const oddsData = response.data?.response?.[0] || null;
-      if (oddsData) {
-        this.oddsCache.set(apiFixtureId, oddsData);
-      }
-      return oddsData;
-    } catch (error) {
-      return null;
+    const oddsData = (await this.rateLimitedGet('/odds', { fixture: apiFixtureId }))?.[0] || null;
+    if (oddsData) {
+      this.oddsCache.set(apiFixtureId, oddsData);
     }
+    return oddsData;
   }
 
   /**
@@ -173,23 +189,13 @@ export class FootballDataService {
       return this.h2hCache.get(cacheKey) || [];
     }
 
-    try {
-      const response = await this.client.get('/fixtures/headtohead', {
-        params: {
-          h2h: cacheKey,
-        },
-      });
-
-      const data = response.data?.response || [];
-      this.h2hCache.set(cacheKey, data);
-      return data;
-    } catch (error) {
-      return [];
-    }
+    const data = (await this.rateLimitedGet('/fixtures/headtohead', { h2h: cacheKey })) || [];
+    this.h2hCache.set(cacheKey, data);
+    return data;
   }
 
   /**
-   * Fetch real team statistics with intelligent multi-season fallback & cache
+   * Fetch real team statistics with domestic league fallback & multi-season check
    */
   async getTeamStats(
     teamId: number,
@@ -200,26 +206,22 @@ export class FootballDataService {
       return this.statsCache.get(cacheKey);
     }
 
-    // Try current season down to previous season (2024, 2023)
-    for (const season of [2024, 2023]) {
-      try {
-        const response = await this.client.get('/teams/statistics', {
-          params: {
-            team: teamId,
-            league: leagueId,
-            season,
-          },
+    // Determine target league IDs to check (includes domestic league fallbacks for cup games)
+    const leaguesToCheck = [leagueId, ...(DOMESTIC_LEAGUE_MAP[leagueId] || [])];
+
+    for (const lId of leaguesToCheck) {
+      for (const season of [2024, 2023]) {
+        const data = await this.rateLimitedGet('/teams/statistics', {
+          team: teamId,
+          league: lId,
+          season,
         });
 
-        const data = response.data?.response;
         const avg = parseFloat(data?.goals?.for?.average?.total || '0');
-
         if (avg > 0.1) {
           this.statsCache.set(cacheKey, data);
           return data;
         }
-      } catch (error) {
-        break; // Stop on network or rate limit error
       }
     }
 
@@ -231,14 +233,8 @@ export class FootballDataService {
    */
   async updateFinishedFixtures(dateStr: string): Promise<Fixture[]> {
     try {
-      const response = await this.client.get('/fixtures', {
-        params: {
-          date: dateStr,
-          status: 'FT',
-        },
-      });
-
-      const finishedData = response.data?.response || [];
+      const finishedData =
+        (await this.rateLimitedGet('/fixtures', { date: dateStr, status: 'FT' })) || [];
       const updated: Fixture[] = [];
 
       for (const item of finishedData) {
@@ -256,7 +252,6 @@ export class FootballDataService {
 
       return updated;
     } catch (error) {
-      this.logger.error(`Error updating finished fixtures: ${error.message}`);
       return [];
     }
   }
