@@ -31,15 +31,7 @@ export class FreeTipService {
       };
     }
 
-    // Fallback if no fixtures generated yet
-    return {
-      date: new Date().toLocaleDateString('en-GB'),
-      name: 'PSG v. FC Barcelona',
-      league: 'UEFA Champions League',
-      prediction: 'Both Teams To Score',
-      odds: 1.75,
-      confidence: 78.0,
-      isFree: true,
-    };
+    // If no tips exist yet, return null (frontend can display empty state)
+    return null;
   }
 }

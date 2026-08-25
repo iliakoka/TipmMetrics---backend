@@ -579,15 +579,7 @@ export class TipsService {
       todayTips = await this.generateDailyTips(todayStr);
     }
 
-    if (todayTips.length > 0) {
-      return todayTips;
-    }
-
-    return this.tipRepository.find({
-      where: { result: TipResult.PENDING },
-      order: { matchDate: 'ASC', isFree: 'DESC' },
-      relations: ['fixture'],
-    });
+    return todayTips || [];
   }
 
   /**
