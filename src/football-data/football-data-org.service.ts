@@ -26,9 +26,8 @@ export class FootballDataOrgService {
   private readonly logger = new Logger(FootballDataOrgService.name);
   private client: AxiosInstance;
 
-  // In-memory standings cache (competition code -> standings table)
+  // In-memory cache for standings
   private standingsCache = new Map<string, any>();
-  private h2hCache = new Map<number, any>();
   private lastRequestTime = 0;
 
   constructor(
@@ -46,17 +45,17 @@ export class FootballDataOrgService {
       headers: {
         'X-Auth-Token': apiToken,
       },
-      timeout: 10000,
+      timeout: 8000,
     });
   }
 
   /**
-   * Paced request executor respecting X-Requests-Available-Minute headers
+   * Fast request executor with lightweight rate limiter
    */
-  private async rateLimitedGet(endpoint: string, params: any = {}): Promise<any> {
+  private async fastGet(endpoint: string, params: any = {}): Promise<any> {
     const now = Date.now();
     const timeSinceLast = now - this.lastRequestTime;
-    const minDelay = 650; // Smooth 650ms pacing
+    const minDelay = 200; // Fast 200ms pacing
     if (timeSinceLast < minDelay) {
       await new Promise((resolve) => setTimeout(resolve, minDelay - timeSinceLast));
     }
@@ -64,26 +63,9 @@ export class FootballDataOrgService {
 
     try {
       const res = await this.client.get(endpoint, { params });
-
-      // Check throttling headers from Football-Data.org
-      const available = parseInt(
-        res.headers?.['x-requests-available-minute'] || '10',
-        10,
-      );
-      if (available <= 1) {
-        const waitSec = parseInt(
-          res.headers?.['x-requestcounter-reset'] || '10',
-          10,
-        );
-        this.logger.warn(`Approaching per-minute limit. Throttling for ${waitSec}s...`);
-        await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
-      }
-
       return res.data || null;
     } catch (err) {
-      this.logger.warn(
-        `Football-Data.org API call to ${endpoint} failed: ${err.message}`,
-      );
+      this.logger.warn(`Football-Data.org call to ${endpoint} failed: ${err.message}`);
       return null;
     }
   }
@@ -94,7 +76,7 @@ export class FootballDataOrgService {
   async syncFixturesForDate(dateStr: string): Promise<Fixture[]> {
     this.logger.log(`Fetching Football-Data.org fixtures for date: ${dateStr}`);
 
-    const data = await this.rateLimitedGet('/matches', {
+    const data = await this.fastGet('/matches', {
       dateFrom: dateStr,
       dateTo: dateStr,
     });
@@ -103,10 +85,6 @@ export class FootballDataOrgService {
     const savedFixtures: Fixture[] = [];
 
     for (const m of rawMatches) {
-      const compCode = m.competition?.code;
-      const isTarget = FOOTBALL_DATA_COMPETITIONS.some((c) => c.code === compCode);
-      if (!isTarget && rawMatches.length > 30) continue;
-
       const apiFixtureId = m.id;
       let fixture = await this.fixtureRepository.findOne({
         where: { apiFixtureId },
@@ -139,25 +117,31 @@ export class FootballDataOrgService {
       savedFixtures.push(await this.fixtureRepository.save(fixture));
     }
 
-    this.logger.log(
-      `Synced ${savedFixtures.length} matches from Football-Data.org for ${dateStr}`,
+    // Pre-fetch standings for all active competitions in parallel (super fast!)
+    const activeCodes = Array.from(new Set(rawMatches.map((m: any) => m.competition?.code).filter(Boolean)));
+    await Promise.all(
+      activeCodes.map(async (code: string) => {
+        if (!this.standingsCache.has(code)) {
+          const sData = await this.fastGet(`/competitions/${code}/standings`);
+          if (sData?.standings) {
+            this.standingsCache.set(code, sData.standings);
+          }
+        }
+      }),
     );
+
+    this.logger.log(`Synced ${savedFixtures.length} matches from Football-Data.org for ${dateStr}`);
     return savedFixtures;
   }
 
   /**
-   * Get team performance stats by loading the league table in a single call
+   * Get team performance stats instantly from in-memory pre-fetched standings (0ms latency!)
    */
-  async getTeamStats(
-    teamId: number,
-    competitionCode: string,
-  ): Promise<any | null> {
+  async getTeamStats(teamId: number, competitionCode: string): Promise<any | null> {
     if (!competitionCode) return null;
 
     if (!this.standingsCache.has(competitionCode)) {
-      const data = await this.rateLimitedGet(
-        `/competitions/${competitionCode}/standings`,
-      );
+      const data = await this.fastGet(`/competitions/${competitionCode}/standings`);
       if (data?.standings) {
         this.standingsCache.set(competitionCode, data.standings);
       }
@@ -166,13 +150,9 @@ export class FootballDataOrgService {
     const standings = this.standingsCache.get(competitionCode);
     if (!standings) return null;
 
-    // Search total, home, away standings tables
-    const totalTable =
-      standings.find((s: any) => s.type === 'TOTAL')?.table || [];
-    const homeTable =
-      standings.find((s: any) => s.type === 'HOME')?.table || [];
-    const awayTable =
-      standings.find((s: any) => s.type === 'AWAY')?.table || [];
+    const totalTable = standings.find((s: any) => s.type === 'TOTAL')?.table || [];
+    const homeTable = standings.find((s: any) => s.type === 'HOME')?.table || [];
+    const awayTable = standings.find((s: any) => s.type === 'AWAY')?.table || [];
 
     const teamTotal = totalTable.find((t: any) => t.team?.id === teamId);
     const teamHome = homeTable.find((t: any) => t.team?.id === teamId);
@@ -181,39 +161,29 @@ export class FootballDataOrgService {
     if (!teamTotal) return null;
 
     const playedTotal = teamTotal.playedGames || 1;
-    const playedHome =
-      teamHome?.playedGames || Math.max(1, Math.floor(playedTotal / 2));
-    const playedAway =
-      teamAway?.playedGames || Math.max(1, Math.floor(playedTotal / 2));
+    const playedHome = teamHome?.playedGames || Math.max(1, Math.floor(playedTotal / 2));
+    const playedAway = teamAway?.playedGames || Math.max(1, Math.floor(playedTotal / 2));
 
-    const homeGoalsScored = teamHome
-      ? teamHome.goalsFor / playedHome
-      : teamTotal.goalsFor / playedTotal;
-    const homeGoalsConceded = teamHome
-      ? teamHome.goalsAgainst / playedHome
-      : teamTotal.goalsAgainst / playedTotal;
+    const homeGoalsScored = teamHome ? teamHome.goalsFor / playedHome : teamTotal.goalsFor / playedTotal;
+    const homeGoalsConceded = teamHome ? teamHome.goalsAgainst / playedHome : teamTotal.goalsAgainst / playedTotal;
 
-    const awayGoalsScored = teamAway
-      ? teamAway.goalsFor / playedAway
-      : teamTotal.goalsFor / playedTotal;
-    const awayGoalsConceded = teamAway
-      ? teamAway.goalsAgainst / playedAway
-      : teamTotal.goalsAgainst / playedTotal;
+    const awayGoalsScored = teamAway ? teamAway.goalsFor / playedAway : teamTotal.goalsFor / playedTotal;
+    const awayGoalsConceded = teamAway ? teamAway.goalsAgainst / playedAway : teamTotal.goalsAgainst / playedTotal;
 
     return {
       goals: {
         for: {
           average: {
-            home: homeGoalsScored.toFixed(2),
-            away: awayGoalsScored.toFixed(2),
-            total: (teamTotal.goalsFor / playedTotal).toFixed(2),
+            home: (homeGoalsScored || 1.3).toFixed(2),
+            away: (awayGoalsScored || 1.1).toFixed(2),
+            total: (teamTotal.goalsFor / playedTotal || 1.2).toFixed(2),
           },
         },
         against: {
           average: {
-            home: homeGoalsConceded.toFixed(2),
-            away: awayGoalsConceded.toFixed(2),
-            total: (teamTotal.goalsAgainst / playedTotal).toFixed(2),
+            home: (homeGoalsConceded || 1.0).toFixed(2),
+            away: (awayGoalsConceded || 1.3).toFixed(2),
+            total: (teamTotal.goalsAgainst / playedTotal || 1.1).toFixed(2),
           },
         },
       },
@@ -222,27 +192,11 @@ export class FootballDataOrgService {
   }
 
   /**
-   * Fetch Head-to-Head matches for a specific match
-   */
-  async getH2H(matchId: number): Promise<any[]> {
-    if (this.h2hCache.has(matchId)) {
-      return this.h2hCache.get(matchId) || [];
-    }
-
-    const data = await this.rateLimitedGet(`/matches/${matchId}/head2head`, {
-      limit: 10,
-    });
-    const matches = data?.matches || [];
-    this.h2hCache.set(matchId, matches);
-    return matches;
-  }
-
-  /**
    * Update finished match scores
    */
   async updateFinishedFixtures(dateStr: string): Promise<Fixture[]> {
     try {
-      const data = await this.rateLimitedGet('/matches', {
+      const data = await this.fastGet('/matches', {
         dateFrom: dateStr,
         dateTo: dateStr,
         status: 'FINISHED',
@@ -275,10 +229,8 @@ export class FootballDataOrgService {
    */
   getCompetitionCode(leagueId: number, leagueName: string): string {
     const found = FOOTBALL_DATA_COMPETITIONS.find(
-      (c) =>
-        c.id === leagueId ||
-        leagueName.toLowerCase().includes(c.name.toLowerCase()),
+      (c) => c.id === leagueId || leagueName.toLowerCase().includes(c.name.toLowerCase()),
     );
-    return found ? found.code : 'PL';
+    return found ? found.code : 'PD';
   }
 }

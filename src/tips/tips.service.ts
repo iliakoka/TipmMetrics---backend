@@ -93,50 +93,28 @@ export class TipsService {
             fixture.leagueName,
           );
 
-          // 1. Try Football-Data.org standings stats
-          let homeStats = await this.footballDataOrgService.getTeamStats(
+          const homeStats = await this.footballDataOrgService.getTeamStats(
             fixture.homeTeamId,
             compCode,
           );
-          let awayStats = await this.footballDataOrgService.getTeamStats(
+          const awayStats = await this.footballDataOrgService.getTeamStats(
             fixture.awayTeamId,
             compCode,
           );
-
-          // 2. Fallback to FootballDataService if needed
-          if (!homeStats) {
-            homeStats = await this.footballDataService.getTeamStats(
-              fixture.homeTeamId,
-              fixture.leagueId,
-            );
-          }
-          if (!awayStats) {
-            awayStats = await this.footballDataService.getTeamStats(
-              fixture.awayTeamId,
-              fixture.leagueId,
-            );
-          }
-
-          const [h2h, odds] = await Promise.all([
-            this.footballDataOrgService.getH2H(fixture.apiFixtureId),
-            this.footballDataService.getOddsForFixture(fixture.apiFixtureId),
-          ]);
 
           const candidates = this.predictionEngineService.analyzeFixture(
             fixture,
             homeStats,
             awayStats,
-            h2h,
-            odds,
+            [],
+            null,
           );
 
           allCandidates.push(...candidates);
 
-          if (allCandidates.length >= 10) {
+          if (allCandidates.length >= 8) {
             break;
           }
-
-          await new Promise((resolve) => setTimeout(resolve, 150));
         } catch (err) {
           this.logger.error(
             `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
