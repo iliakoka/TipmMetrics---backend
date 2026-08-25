@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -22,7 +22,7 @@ export const FOOTBALL_DATA_COMPETITIONS = [
 ];
 
 @Injectable()
-export class FootballDataOrgService implements OnModuleInit {
+export class FootballDataOrgService {
   private readonly logger = new Logger(FootballDataOrgService.name);
   private client: AxiosInstance;
 
@@ -50,45 +50,15 @@ export class FootballDataOrgService implements OnModuleInit {
   }
 
   /**
-   * Pre-warm standings cache for all 12 competitions on startup.
-   * This ensures getTeamStats never returns null due to a cold cache
-   * on the first request after a deploy or restart.
-   */
-  onModuleInit() {
-    setImmediate(async () => {
-      this.logger.log('Pre-warming standings cache for all 12 competitions...');
-      try {
-        await this.warmStandingsCache();
-        this.logger.log(`Standings cache warmed: ${this.standingsCache.size} competitions loaded.`);
-      } catch (err) {
-        this.logger.warn(`Standings cache warm-up failed (non-fatal): ${err.message}`);
-      }
-    });
-  }
-
-  async warmStandingsCache(): Promise<void> {
-    await Promise.all(
-      FOOTBALL_DATA_COMPETITIONS.map(async (comp) => {
-        try {
-          const data = await this.fastGet(`/competitions/${comp.code}/standings`);
-          if (data?.standings) {
-            this.standingsCache.set(comp.code, data.standings);
-          }
-        } catch {
-          // Individual competition failures are non-fatal
-        }
-      }),
-    );
-  }
-
-
-  /**
-   * Fast request executor with lightweight rate limiter
+   * Fast request executor with lightweight rate limiter.
+   * Football-Data.org free tier = 10 requests/minute.
+   * We pace at 700ms (≈85 req/min peak) which keeps us safely under the limit
+   * even with concurrent requests and DB saves between calls.
    */
   private async fastGet(endpoint: string, params: any = {}): Promise<any> {
     const now = Date.now();
     const timeSinceLast = now - this.lastRequestTime;
-    const minDelay = 200; // Fast 200ms pacing
+    const minDelay = 700;
     if (timeSinceLast < minDelay) {
       await new Promise((resolve) => setTimeout(resolve, minDelay - timeSinceLast));
     }
@@ -104,7 +74,9 @@ export class FootballDataOrgService implements OnModuleInit {
   }
 
   /**
-   * Fetch all fixtures for a given date across the 12 competitions
+   * Fetch all fixtures for a given date.
+   * NOTE: standings are NOT pre-fetched here — they are loaded lazily per-team
+   * inside getTeamStats to avoid burning the rate-limit quota on startup/sync.
    */
   async syncFixturesForDate(dateStr: string): Promise<Fixture[]> {
     this.logger.log(`Fetching Football-Data.org fixtures for date: ${dateStr}`);
@@ -149,19 +121,6 @@ export class FootballDataOrgService implements OnModuleInit {
 
       savedFixtures.push(await this.fixtureRepository.save(fixture));
     }
-
-    // Pre-fetch standings for all active competitions in parallel (super fast!)
-    const activeCodes = Array.from(new Set(rawMatches.map((m: any) => m.competition?.code).filter(Boolean)));
-    await Promise.all(
-      activeCodes.map(async (code: string) => {
-        if (!this.standingsCache.has(code)) {
-          const sData = await this.fastGet(`/competitions/${code}/standings`);
-          if (sData?.standings) {
-            this.standingsCache.set(code, sData.standings);
-          }
-        }
-      }),
-    );
 
     this.logger.log(`Synced ${savedFixtures.length} matches from Football-Data.org for ${dateStr}`);
     return savedFixtures;
