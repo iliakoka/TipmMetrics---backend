@@ -7,6 +7,8 @@ export interface MatchAnalysis {
   // Match identity
   homeTeam: string;
   awayTeam: string;
+  homeTeamLogo?: string | null;
+  awayTeamLogo?: string | null;
   homeTeamId: number;
   awayTeamId: number;
   leagueId: number;
@@ -175,10 +177,12 @@ export class MatchAnalyzerService {
     oddsMap: Map<string, Record<string, number>>,
     dateStr: string,
   ): Promise<MatchAnalysis | null> {
-    const homeTeamId  = fixture.teams?.home?.id;
-    const awayTeamId  = fixture.teams?.away?.id;
-    const homeTeam    = fixture.teams?.home?.name || 'Home';
-    const awayTeam    = fixture.teams?.away?.name || 'Away';
+    const homeTeamId   = fixture.teams?.home?.id;
+    const awayTeamId   = fixture.teams?.away?.id;
+    const homeTeam     = fixture.teams?.home?.name || 'Home';
+    const awayTeam     = fixture.teams?.away?.name || 'Away';
+    const homeTeamLogo = fixture.teams?.home?.logo || null;
+    const awayTeamLogo = fixture.teams?.away?.logo || null;
     const leagueId    = fixture.league?.id;
     const leagueName  = fixture.league?.name || '';
     const kickoffTime = new Date(fixture.fixture?.date);
@@ -280,7 +284,7 @@ export class MatchAnalyzerService {
     });
 
     return {
-      homeTeam, awayTeam, homeTeamId, awayTeamId,
+      homeTeam, awayTeam, homeTeamLogo, awayTeamLogo, homeTeamId, awayTeamId,
       leagueId, leagueName, kickoffTime, venueCity,
       homeFormPoints: homeFormPts,
       awayFormPoints: awayFormPts,

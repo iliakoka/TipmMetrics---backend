@@ -45,6 +45,8 @@ Returns the automated top **5 to 7 tips** generated for today.
     "leagueName": "Premier League",
     "homeTeamName": "Arsenal",
     "awayTeamName": "Chelsea",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/42.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/49.png",
     "market": "BTTS",
     "prediction": "Both Teams To Score: Yes",
     "odds": "1.78",
@@ -85,6 +87,8 @@ Returns paginated past settled tips with their final outcome (`WON`, `LOST`, `VO
       "id": "...",
       "homeTeamName": "Real Madrid",
       "awayTeamName": "Barcelona",
+      "homeTeamLogo": "https://media.api-sports.io/football/teams/541.png",
+      "awayTeamLogo": "https://media.api-sports.io/football/teams/529.png",
       "market": "OVER_2_5",
       "prediction": "Over 2.5 Goals",
       "odds": "1.85",
@@ -93,6 +97,29 @@ Returns paginated past settled tips with their final outcome (`WON`, `LOST`, `VO
       "settledAt": "2026-08-23T23:30:15.000Z"
     }
   ]
+}
+```
+
+---
+
+### `GET /free-tip-test`
+Returns the designated free teaser tip of the day formatted for landing page / banner display.
+
+**Sample Response:**
+```json
+{
+  "id": "7b8d8102-3c82-411a-8fc7-bcfe9d123e45",
+  "date": "24.08.2026",
+  "name": "Arsenal v. Chelsea",
+  "homeTeam": "Arsenal",
+  "awayTeam": "Chelsea",
+  "homeTeamLogo": "https://media.api-sports.io/football/teams/42.png",
+  "awayTeamLogo": "https://media.api-sports.io/football/teams/49.png",
+  "league": "Premier League",
+  "prediction": "Both Teams To Score: Yes",
+  "odds": 1.78,
+  "confidence": 78.5,
+  "isFree": true
 }
 ```
 

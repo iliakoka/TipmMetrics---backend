@@ -39,6 +39,12 @@ export class Tip {
   @Column()
   awayTeamName: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  homeTeamLogo: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  awayTeamLogo: string | null;
+
   @Column()
   market: string; // 'BTTS', 'OVER_2_5', 'HOME_WIN', 'DOUBLE_CHANCE'
 
