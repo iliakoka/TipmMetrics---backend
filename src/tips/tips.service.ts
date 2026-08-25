@@ -443,16 +443,33 @@ export class TipsService {
   }
 
   /**
-   * Settle pending tips against final match results
+   * Settle pending tips against final match results.
+   * Handles both fixture-linked tips and fixture-less tips (from Odds API / smart analyzer).
    */
   async settleDailyTips(targetDate?: string): Promise<{ settled: number; won: number; lost: number }> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
     this.logger.log(`Settling tips for date: ${dateStr}`);
 
+    // Update fixture scores in DB (for fixture-linked tips)
     await Promise.all([
       this.footballDataOrgService.updateFinishedFixtures(dateStr),
       this.footballDataService.updateFinishedFixtures(dateStr),
     ]);
+
+    // Fetch finished matches from API-Football for fixture-less tip resolution
+    const finishedRaw = await this.footballDataService.getFixturesForDate(dateStr)
+      .then((all) => all.filter((f) => f.fixture?.status?.short === 'FT'))
+      .catch(() => []);
+
+    // Build a lookup: "HomeTeam|AwayTeam" -> { homeGoals, awayGoals }
+    const resultMap = new Map<string, { hg: number; ag: number }>();
+    for (const f of finishedRaw) {
+      const key = `${f.teams?.home?.name}|${f.teams?.away?.name}`;
+      resultMap.set(key, {
+        hg: f.goals?.home ?? 0,
+        ag: f.goals?.away ?? 0,
+      });
+    }
 
     const pendingTips = await this.tipRepository.find({
       where: {
@@ -467,17 +484,30 @@ export class TipsService {
     let settledCount = 0;
 
     for (const tip of pendingTips) {
-      const fixture = tip.fixture;
-      if (!fixture || fixture.homeGoals === null || fixture.awayGoals === null) {
-        continue;
+      let hg: number | null = null;
+      let ag: number | null = null;
+
+      // Priority 1: DB-linked fixture (old Poisson tips)
+      if (tip.fixture && tip.fixture.homeGoals !== null && tip.fixture.awayGoals !== null) {
+        hg = tip.fixture.homeGoals;
+        ag = tip.fixture.awayGoals;
+      } else {
+        // Priority 2: API-Football finished match lookup by team name
+        const lookupKey = `${tip.homeTeamName}|${tip.awayTeamName}`;
+        const found = resultMap.get(lookupKey);
+        if (found) {
+          hg = found.hg;
+          ag = found.ag;
+        }
       }
 
-      const hg = fixture.homeGoals;
-      const ag = fixture.awayGoals;
-      let won = false;
+      // Skip if no result available yet (match not finished)
+      if (hg === null || ag === null) continue;
 
+      let won = false;
       switch (tip.market) {
         case 'BTTS':
+        case 'BTTS_YES':
           won = hg > 0 && ag > 0;
           break;
         case 'BTTS_NO':
@@ -495,20 +525,19 @@ export class TipsService {
         case 'AWAY_WIN':
           won = ag > hg;
           break;
+        case 'DRAW':
+          won = hg === ag;
+          break;
         case 'DOUBLE_CHANCE':
-          if (tip.prediction.includes('1X') || tip.prediction.includes(fixture.homeTeamName)) {
-            won = hg >= ag;
-          } else {
-            won = ag >= hg;
-          }
+          won = tip.prediction.includes(tip.homeTeamName) ? hg >= ag : ag >= hg;
           break;
         default:
           won = false;
       }
 
-      tip.result = won ? TipResult.WON : TipResult.LOST;
+      tip.result    = won ? TipResult.WON : TipResult.LOST;
       tip.resultScore = `${hg}-${ag}`;
-      tip.settledAt = new Date();
+      tip.settledAt   = new Date();
 
       if (won) wonCount++;
       else lostCount++;
@@ -518,7 +547,7 @@ export class TipsService {
     }
 
     this.logger.log(
-      `Settlement completed: ${settledCount} settled (${wonCount} won, ${lostCount} lost)`,
+      `Settlement: ${settledCount} settled (${wonCount} WON, ${lostCount} LOST) for ${dateStr}`,
     );
 
     return { settled: settledCount, won: wonCount, lost: lostCount };

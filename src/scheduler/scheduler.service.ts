@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { TipsService } from '../tips/tips.service';
 
 @Injectable()
@@ -9,85 +9,96 @@ export class SchedulerService implements OnModuleInit {
   constructor(private readonly tipsService: TipsService) {}
 
   /**
-   * On startup — generate today's tips in the background so a fresh deploy
-   * never serves an empty slate. Uses setImmediate so the app becomes ready
-   * instantly and Railway's health check passes before we start heavy work.
+   * On startup — generate today's tips in the background.
+   * Uses setImmediate so Railway's health check passes instantly.
    */
   onModuleInit() {
     setImmediate(async () => {
-      this.logger.log('Startup (background): triggering today\'s tip generation...');
+      this.logger.log('[Startup] Triggering today\'s tip generation in background...');
       try {
         const tips = await this.tipsService.generateDailyTips();
-        this.logger.log(`Startup (background): ${tips.length} tips ready for today.`);
+        this.logger.log(`[Startup] ${tips.length} tips ready for today.`);
       } catch (err) {
-        this.logger.error(`Startup tip generation failed: ${err.message}`);
+        this.logger.error(`[Startup] Tip generation failed: ${err.message}`);
       }
     });
   }
 
   /**
-   * Daily at 06:00 AM UTC — Generate the Top 5-7 Tips for Today
+   * STEP 1 — Every day at 05:55 AM UTC
+   * Settle yesterday's predictions: mark each tip as WON / LOST
+   * and push results into statistics before new tips are generated.
    */
-  @Cron('0 6 * * *')
-  async handleDailyTipGeneration() {
-    this.logger.log('CRON 06:00 UTC: Running morning tip generation...');
-    try {
-      const tips = await this.tipsService.generateDailyTips();
-      this.logger.log(`CRON 06:00 UTC: ${tips.length} tips generated.`);
-    } catch (err) {
-      this.logger.error(`CRON 06:00 UTC: Error: ${err.message}`);
-    }
-  }
-
-  /**
-   * Daily at 10:00 AM UTC — Safety retry: if fewer than 5 tips exist for
-   * today (e.g. 06:00 generation failed or produced too few), force-regenerate.
-   */
-  @Cron('0 10 * * *')
-  async handleDailyTipRetry() {
-    this.logger.log('CRON 10:00 UTC: Checking today\'s tip count...');
-    try {
-      const todayTips = await this.tipsService.getTodayTips();
-      if (todayTips.length < 5) {
-        this.logger.warn(
-          `CRON 10:00 UTC: Only ${todayTips.length} tips found — force-regenerating...`,
-        );
-        const tips = await this.tipsService.generateDailyTips(undefined, true);
-        this.logger.log(`CRON 10:00 UTC: Retry produced ${tips.length} tips.`);
-      } else {
-        this.logger.log(`CRON 10:00 UTC: ${todayTips.length} tips OK — no retry needed.`);
-      }
-    } catch (err) {
-      this.logger.error(`CRON 10:00 UTC: Retry error: ${err.message}`);
-    }
-  }
-
-  /**
-   * Daily at 23:30 PM UTC — Settle Match Results and Calculate Won/Lost Status
-   */
-  @Cron('30 23 * * *')
-  async handleDailySettlementNight() {
-    this.logger.log('CRON 23:30 UTC: Running night settlement check...');
-    try {
-      await this.tipsService.settleDailyTips();
-    } catch (err) {
-      this.logger.error(`CRON 23:30 UTC: Settlement error: ${err.message}`);
-    }
-  }
-
-  /**
-   * Daily at 02:00 AM UTC — Final Settlement pass for late/overseas matches
-   */
-  @Cron('0 2 * * *')
-  async handleDailySettlementLate() {
-    this.logger.log('CRON 02:00 UTC: Running late settlement check...');
+  @Cron('55 5 * * *')
+  async handleSettlement() {
+    this.logger.log('[CRON 05:55 UTC] Settling yesterday\'s tips...');
     try {
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
         .toISOString()
         .split('T')[0];
-      await this.tipsService.settleDailyTips(yesterday);
+
+      const result = await this.tipsService.settleDailyTips(yesterday);
+      this.logger.log(
+        `[CRON 05:55 UTC] Settlement done — ${result.settled} settled, ${result.won} WON, ${result.lost} LOST`,
+      );
     } catch (err) {
-      this.logger.error(`CRON 02:00 UTC: Late settlement error: ${err.message}`);
+      this.logger.error(`[CRON 05:55 UTC] Settlement error: ${err.message}`);
+    }
+  }
+
+  /**
+   * STEP 2 — Every day at 06:00 AM UTC (5 minutes after settlement)
+   * Generate fresh tips for today's matches.
+   */
+  @Cron('0 6 * * *')
+  async handleDailyTipGeneration() {
+    this.logger.log('[CRON 06:00 UTC] Generating today\'s tips...');
+    try {
+      const tips = await this.tipsService.generateDailyTips();
+      this.logger.log(`[CRON 06:00 UTC] ${tips.length} tips generated for today.`);
+    } catch (err) {
+      this.logger.error(`[CRON 06:00 UTC] Generation error: ${err.message}`);
+    }
+  }
+
+  /**
+   * SAFETY NET — Every day at 09:00 AM UTC
+   * If fewer than 5 tips exist (generation failed or API limit was hit),
+   * force-regenerate using the Odds API fallback.
+   */
+  @Cron('0 9 * * *')
+  async handleSafetyRetry() {
+    this.logger.log('[CRON 09:00 UTC] Checking tip count...');
+    try {
+      const todayTips = await this.tipsService.getTodayTips();
+      if (todayTips.length < 5) {
+        this.logger.warn(
+          `[CRON 09:00 UTC] Only ${todayTips.length} tips — force-regenerating...`,
+        );
+        const tips = await this.tipsService.generateDailyTips(undefined, true);
+        this.logger.log(`[CRON 09:00 UTC] Safety retry produced ${tips.length} tips.`);
+      } else {
+        this.logger.log(`[CRON 09:00 UTC] ${todayTips.length} tips OK — no retry needed.`);
+      }
+    } catch (err) {
+      this.logger.error(`[CRON 09:00 UTC] Safety retry error: ${err.message}`);
+    }
+  }
+
+  /**
+   * LATE SETTLEMENT — Every day at 23:45 PM UTC
+   * Catch any matches that finished late in the evening.
+   */
+  @Cron('45 23 * * *')
+  async handleLateSettlement() {
+    this.logger.log('[CRON 23:45 UTC] Running late settlement check...');
+    try {
+      const result = await this.tipsService.settleDailyTips();
+      this.logger.log(
+        `[CRON 23:45 UTC] Late settlement — ${result.settled} settled, ${result.won} WON, ${result.lost} LOST`,
+      );
+    } catch (err) {
+      this.logger.error(`[CRON 23:45 UTC] Late settlement error: ${err.message}`);
     }
   }
 }
