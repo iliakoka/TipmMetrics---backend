@@ -6,14 +6,12 @@ import { Tip } from './tip.entity';
 import { Fixture } from '../fixtures/fixture.entity';
 import { FootballDataModule } from '../football-data/football-data.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
-import { BasketballModule } from '../basketball/basketball.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Tip, Fixture]),
     FootballDataModule,
     AnalyticsModule,
-    BasketballModule,
   ],
   controllers: [TipsController],
   providers: [TipsService],

@@ -6,7 +6,6 @@ import { AppService } from './app.service';
 import { FreeTipModule } from './free-tip/free-tip.module';
 import { AuthModule } from './auth/auth.module';
 import { FootballDataModule } from './football-data/football-data.module';
-import { BasketballModule } from './basketball/basketball.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { TipsModule } from './tips/tips.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
@@ -14,6 +13,7 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 import { User } from './users/user.entity';
 import { Fixture } from './fixtures/fixture.entity';
 import { Tip } from './tips/tip.entity';
+import { TeamStat } from './football-data/team-stat.entity';
 
 @Module({
   imports: [
@@ -23,7 +23,7 @@ import { Tip } from './tips/tip.entity';
       useFactory: (configService: ConfigService) => ({
         type: 'postgres',
         url: configService.get<string>('DATABASE_URL'),
-        entities: [User, Fixture, Tip],
+        entities: [User, Fixture, Tip, TeamStat],
         synchronize: true, // auto-creates/updates tables in PostgreSQL
         ssl: { rejectUnauthorized: false },
       }),
@@ -32,7 +32,6 @@ import { Tip } from './tips/tip.entity';
     FreeTipModule,
     AuthModule,
     FootballDataModule,
-    BasketballModule,
     AnalyticsModule,
     TipsModule,
     SchedulerModule,

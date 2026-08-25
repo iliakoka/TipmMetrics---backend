@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import axios, { AxiosInstance } from 'axios';
 import { Fixture } from '../fixtures/fixture.entity';
+import { TeamStat } from './team-stat.entity';
 
 // Top international and domestic first-tier leagues and major cups
 export const TARGET_LEAGUES = [
@@ -40,7 +41,6 @@ export const TARGET_LEAGUES = [
   { id: 207, name: 'Super League', country: 'Switzerland' },
 ];
 
-// Major domestic league fallbacks for Cup/European ties
 const DOMESTIC_LEAGUE_MAP: Record<number, number[]> = {
   48: [39, 40], // EFL Cup -> Premier League, Championship
   45: [39, 40], // FA Cup -> Premier League, Championship
@@ -58,7 +58,6 @@ export class FootballDataService {
   private readonly logger = new Logger(FootballDataService.name);
   private client: AxiosInstance;
 
-  // In-memory caches
   private statsCache = new Map<string, any>();
   private h2hCache = new Map<string, any[]>();
   private oddsCache = new Map<number, any>();
@@ -68,6 +67,8 @@ export class FootballDataService {
     private configService: ConfigService,
     @InjectRepository(Fixture)
     private fixtureRepository: Repository<Fixture>,
+    @InjectRepository(TeamStat)
+    private teamStatRepository: Repository<TeamStat>,
   ) {
     const apiKey = this.configService.get<string>('FOOTBALL_API_KEY');
     const baseURL =
@@ -195,7 +196,7 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch real team statistics with domestic league fallback & multi-season check
+   * Fetch real team statistics with persistent PostgreSQL cache (Zero Wasted Requests!)
    */
   async getTeamStats(
     teamId: number,
@@ -206,7 +207,37 @@ export class FootballDataService {
       return this.statsCache.get(cacheKey);
     }
 
-    // Determine target league IDs to check (includes domestic league fallbacks for cup games)
+    // 1. Check persistent PostgreSQL database cache first!
+    const dbStat = await this.teamStatRepository.findOne({
+      where: { teamId },
+    });
+
+    if (dbStat) {
+      const formatted = {
+        goals: {
+          for: {
+            average: {
+              home: dbStat.goalsForHome.toFixed(1),
+              away: dbStat.goalsForAway.toFixed(1),
+              total: dbStat.goalsForTotal.toFixed(1),
+            },
+          },
+          against: {
+            average: {
+              home: dbStat.goalsAgainstHome.toFixed(1),
+              away: dbStat.goalsAgainstAway.toFixed(1),
+              total: dbStat.goalsAgainstTotal.toFixed(1),
+            },
+          },
+        },
+        form: dbStat.form,
+      };
+
+      this.statsCache.set(cacheKey, formatted);
+      return formatted;
+    }
+
+    // 2. If not in PostgreSQL, query API-Sports across relevant leagues
     const leaguesToCheck = [leagueId, ...(DOMESTIC_LEAGUE_MAP[leagueId] || [])];
 
     for (const lId of leaguesToCheck) {
@@ -217,8 +248,27 @@ export class FootballDataService {
           season,
         });
 
-        const avg = parseFloat(data?.goals?.for?.average?.total || '0');
-        if (avg > 0.1) {
+        const avgScored = parseFloat(data?.goals?.for?.average?.total || '0');
+        if (avgScored > 0.1) {
+          // Persist to PostgreSQL database so we NEVER call API-Sports for this team again!
+          try {
+            const newStat = this.teamStatRepository.create({
+              teamId,
+              leagueId: lId,
+              season,
+              goalsForHome: parseFloat(data.goals?.for?.average?.home || '1.3'),
+              goalsForAway: parseFloat(data.goals?.for?.average?.away || '1.1'),
+              goalsForTotal: avgScored,
+              goalsAgainstHome: parseFloat(data.goals?.against?.average?.home || '1.0'),
+              goalsAgainstAway: parseFloat(data.goals?.against?.average?.away || '1.3'),
+              goalsAgainstTotal: parseFloat(data.goals?.against?.average?.total || '1.2'),
+              form: data.form || 'WDLW',
+            });
+            await this.teamStatRepository.save(newStat);
+          } catch (e) {
+            // Ignore duplicate key collision
+          }
+
           this.statsCache.set(cacheKey, data);
           return data;
         }

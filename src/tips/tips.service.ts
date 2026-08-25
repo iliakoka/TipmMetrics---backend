@@ -3,10 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, LessThanOrEqual } from 'typeorm';
 import { Tip, TipResult } from './tip.entity';
 import { Fixture } from '../fixtures/fixture.entity';
+import { FootballDataOrgService } from '../football-data/football-data-org.service';
 import { FootballDataService } from '../football-data/football-data.service';
 import { PredictionEngineService, CandidateTip } from '../analytics/prediction-engine.service';
-import { BasketballDataService } from '../basketball/basketball-data.service';
-import { BasketballPredictionEngineService } from '../basketball/basketball-prediction-engine.service';
 
 @Injectable()
 export class TipsService {
@@ -17,21 +16,20 @@ export class TipsService {
     private tipRepository: Repository<Tip>,
     @InjectRepository(Fixture)
     private fixtureRepository: Repository<Fixture>,
+    private footballDataOrgService: FootballDataOrgService,
     private footballDataService: FootballDataService,
     private predictionEngineService: PredictionEngineService,
-    private basketballDataService: BasketballDataService,
-    private basketballPredictionEngineService: BasketballPredictionEngineService,
   ) {}
 
   /**
-   * Generates top 5 - 7 tips for a given date (defaults to today)
+   * Generates top 5 - 7 tips for a given date across the 12 tier-1 competitions
    */
   async generateDailyTips(
     targetDate?: string,
     force?: boolean,
   ): Promise<Tip[]> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
-    this.logger.log(`Starting automated tip generation for: ${dateStr} (force=${!!force})`);
+    this.logger.log(`Starting Football-Data.org tip generation for: ${dateStr} (force=${!!force})`);
 
     const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
     const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
@@ -52,130 +50,102 @@ export class TipsService {
         return existingTips;
       }
 
-      // If force is true, remove only the pending ones to re-analyze with enhanced algorithm
+      // If force is true, remove only the pending ones to re-analyze
       const pendingExisting = existingTips.filter(
         (t) => t.result === TipResult.PENDING,
       );
       if (pendingExisting.length > 0) {
         await this.tipRepository.remove(pendingExisting);
         this.logger.log(
-          `Force refresh: Removed ${pendingExisting.length} pending tips to re-calculate with updated engine`,
+          `Force refresh: Removed ${pendingExisting.length} pending tips to re-calculate`,
         );
       }
     }
 
     const allCandidates: CandidateTip[] = [];
 
-    // 2. Process Football Fixtures (if quota available, or fallback to saved database fixtures)
-    try {
-      let fixtures = await this.footballDataService.syncFixturesForDate(dateStr);
-      if (!fixtures || fixtures.length === 0) {
-        fixtures = await this.fixtureRepository.find({
-          where: { matchDate: Between(startOfDay, endOfDay) },
-        });
-      }
+    // 2. Fetch fixtures from Football-Data.org
+    let fixtures = await this.footballDataOrgService.syncFixturesForDate(dateStr);
 
-      if (fixtures && fixtures.length > 0) {
-        const upcomingFixtures = fixtures.filter(
-          (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
-        );
-        const targetFixtures =
-          upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
+    // If Football-Data.org returned 0 fixtures (e.g. no token configured or off-season date), fallback to FootballDataService or DB
+    if (!fixtures || fixtures.length === 0) {
+      fixtures = await this.footballDataService.syncFixturesForDate(dateStr);
+    }
+    if (!fixtures || fixtures.length === 0) {
+      fixtures = await this.fixtureRepository.find({
+        where: { matchDate: Between(startOfDay, endOfDay) },
+      });
+    }
 
-        const sampleFixtures = targetFixtures.slice(0, 25);
+    if (fixtures && fixtures.length > 0) {
+      const upcomingFixtures = fixtures.filter(
+        (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
+      );
+      const targetFixtures =
+        upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
 
-        for (const fixture of sampleFixtures) {
-          try {
-            const [homeStats, awayStats, h2h, odds] = await Promise.all([
-              this.footballDataService.getTeamStats(
-                fixture.homeTeamId,
-                fixture.leagueId,
-              ),
-              this.footballDataService.getTeamStats(
-                fixture.awayTeamId,
-                fixture.leagueId,
-              ),
-              this.footballDataService.getH2H(
-                fixture.homeTeamId,
-                fixture.awayTeamId,
-              ),
-              this.footballDataService.getOddsForFixture(fixture.apiFixtureId),
-            ]);
+      const sampleFixtures = targetFixtures.slice(0, 25);
 
-            const candidates = this.predictionEngineService.analyzeFixture(
-              fixture,
-              homeStats,
-              awayStats,
-              h2h,
-              odds,
-            );
+      for (const fixture of sampleFixtures) {
+        try {
+          const compCode = this.footballDataOrgService.getCompetitionCode(
+            fixture.leagueId,
+            fixture.leagueName,
+          );
 
-            allCandidates.push(...candidates);
+          // 1. Try Football-Data.org standings stats
+          let homeStats = await this.footballDataOrgService.getTeamStats(
+            fixture.homeTeamId,
+            compCode,
+          );
+          let awayStats = await this.footballDataOrgService.getTeamStats(
+            fixture.awayTeamId,
+            compCode,
+          );
 
-            // Once we have 8+ verified high-confidence candidates, stop querying to save quota
-            if (allCandidates.length >= 8) {
-              break;
-            }
-
-            // Pacing to stay smoothly within API rate limits (10 req/min)
-            await new Promise((resolve) => setTimeout(resolve, 300));
-          } catch (err) {
-            this.logger.error(
-              `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
+          // 2. Fallback to FootballDataService if needed
+          if (!homeStats) {
+            homeStats = await this.footballDataService.getTeamStats(
+              fixture.homeTeamId,
+              fixture.leagueId,
             );
           }
+          if (!awayStats) {
+            awayStats = await this.footballDataService.getTeamStats(
+              fixture.awayTeamId,
+              fixture.leagueId,
+            );
+          }
+
+          const [h2h, odds] = await Promise.all([
+            this.footballDataOrgService.getH2H(fixture.apiFixtureId),
+            this.footballDataService.getOddsForFixture(fixture.apiFixtureId),
+          ]);
+
+          const candidates = this.predictionEngineService.analyzeFixture(
+            fixture,
+            homeStats,
+            awayStats,
+            h2h,
+            odds,
+          );
+
+          allCandidates.push(...candidates);
+
+          if (allCandidates.length >= 10) {
+            break;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        } catch (err) {
+          this.logger.error(
+            `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
+          );
         }
       }
-    } catch (err) {
-      this.logger.warn(`Football processing skipped: ${err.message}`);
     }
 
-    // 3. Ingest and Analyze Basketball Games (Independent Quota!)
-    try {
-      const basketballGames =
-        await this.basketballDataService.getGamesForDate(dateStr);
-      for (const game of basketballGames.slice(0, 10)) {
-        if (
-          game.status?.short !== 'NS' &&
-          new Date(game.date) < new Date()
-        ) {
-          continue;
-        }
-
-        let bFixture = await this.fixtureRepository.findOne({
-          where: { apiFixtureId: game.id },
-        });
-
-        if (!bFixture) {
-          bFixture = this.fixtureRepository.create({
-            apiFixtureId: game.id,
-            leagueId: game.league?.id || 0,
-            leagueName: `🏀 ${game.league?.name || 'Basketball'}`,
-            leagueCountry: game.country?.name || '',
-            homeTeamId: game.teams?.home?.id || 0,
-            homeTeamName: game.teams?.home?.name || 'Home Team',
-            awayTeamId: game.teams?.away?.id || 0,
-            awayTeamName: game.teams?.away?.name || 'Away Team',
-            matchDate: new Date(game.date),
-            status: game.status?.short || 'NS',
-          });
-          bFixture = await this.fixtureRepository.save(bFixture);
-        }
-
-        const odds = await this.basketballDataService.getOddsForGame(game.id);
-        const bCandidates =
-          this.basketballPredictionEngineService.analyzeGame(game, odds);
-
-        for (const bc of bCandidates) {
-          bc.fixture = bFixture;
-          allCandidates.push(bc);
-        }
-      }
-    } catch (err) {
-      this.logger.warn(`Could not analyze basketball games: ${err.message}`);
-    }
-
-    // 4. Select top 5-7 tips
+    // 3. Select top 5-7 tips
     const selected = this.predictionEngineService.selectDailyTips(
       allCandidates,
       6,
@@ -185,7 +155,7 @@ export class TipsService {
       return [];
     }
 
-    // 5. Save tips to database
+    // 4. Save tips to database
     const savedTips: Tip[] = [];
     for (let i = 0; i < selected.length; i++) {
       const item = selected[i];
@@ -214,16 +184,15 @@ export class TipsService {
   }
 
   /**
-   * Settle pending tips against final match results (Football & Basketball)
+   * Settle pending tips against final match results
    */
   async settleDailyTips(targetDate?: string): Promise<{ settled: number; won: number; lost: number }> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
     this.logger.log(`Settling tips for date: ${dateStr}`);
 
-    // Update finished fixture scores for Football & Basketball
     await Promise.all([
+      this.footballDataOrgService.updateFinishedFixtures(dateStr),
       this.footballDataService.updateFinishedFixtures(dateStr),
-      this.basketballDataService.updateFinishedGames(dateStr, this.fixtureRepository),
     ]);
 
     const pendingTips = await this.tipRepository.find({
@@ -274,28 +243,6 @@ export class TipsService {
             won = ag >= hg;
           }
           break;
-        case 'OVER_POINTS':
-        case 'TOTAL_POINTS': {
-          const line = tip.factors?.line || parseFloat(tip.prediction.replace(/[^0-9.]/g, '')) || 158.5;
-          if (tip.prediction.toLowerCase().includes('under')) {
-            won = hg + ag < line;
-          } else {
-            won = hg + ag > line;
-          }
-          break;
-        }
-        case 'UNDER_POINTS': {
-          const line = tip.factors?.line || parseFloat(tip.prediction.replace(/[^0-9.]/g, '')) || 158.5;
-          won = hg + ag < line;
-          break;
-        }
-        case 'MONEYLINE':
-          if (tip.prediction.includes(fixture.homeTeamName)) {
-            won = hg > ag;
-          } else {
-            won = ag > hg;
-          }
-          break;
         default:
           won = false;
       }
@@ -320,19 +267,17 @@ export class TipsService {
 
   /**
    * Get Active / Today's tips for the Tips page
-   * Auto-generates today's tips if none exist yet!
    */
   async getTodayTips(): Promise<Tip[]> {
     const todayStr = new Date().toISOString().split('T')[0];
     const startOfToday = new Date(`${todayStr}T00:00:00.000Z`);
     const endOfToday = new Date(`${todayStr}T23:59:59.999Z`);
 
-    // 1. Settle past finished matches in the background
+    // Background settlement of past matches
     this.settleDailyTips().catch((err) =>
       this.logger.warn(`Background settlement error: ${err.message}`),
     );
 
-    // 2. Fetch today's generated tips
     let todayTips = await this.tipRepository.find({
       where: {
         matchDate: Between(startOfToday, endOfToday),
@@ -341,7 +286,6 @@ export class TipsService {
       relations: ['fixture'],
     });
 
-    // 3. If no tips exist for today yet, auto-generate them!
     if (todayTips.length === 0) {
       this.logger.log(`No tips found for ${todayStr}. Auto-generating today's daily tips...`);
       todayTips = await this.generateDailyTips(todayStr);
@@ -351,7 +295,6 @@ export class TipsService {
       return todayTips;
     }
 
-    // 4. Fallback to any pending tips
     return this.tipRepository.find({
       where: { result: TipResult.PENDING },
       order: { matchDate: 'ASC', isFree: 'DESC' },
