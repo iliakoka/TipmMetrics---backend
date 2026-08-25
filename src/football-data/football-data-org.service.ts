@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -22,7 +22,7 @@ export const FOOTBALL_DATA_COMPETITIONS = [
 ];
 
 @Injectable()
-export class FootballDataOrgService {
+export class FootballDataOrgService implements OnModuleInit {
   private readonly logger = new Logger(FootballDataOrgService.name);
   private client: AxiosInstance;
 
@@ -48,6 +48,37 @@ export class FootballDataOrgService {
       timeout: 8000,
     });
   }
+
+  /**
+   * Pre-warm standings cache for all 12 competitions on startup.
+   * This ensures getTeamStats never returns null due to a cold cache
+   * on the first request after a deploy or restart.
+   */
+  async onModuleInit() {
+    this.logger.log('Pre-warming standings cache for all 12 competitions...');
+    try {
+      await this.warmStandingsCache();
+      this.logger.log(`Standings cache warmed: ${this.standingsCache.size} competitions loaded.`);
+    } catch (err) {
+      this.logger.warn(`Standings cache warm-up failed (non-fatal): ${err.message}`);
+    }
+  }
+
+  async warmStandingsCache(): Promise<void> {
+    await Promise.all(
+      FOOTBALL_DATA_COMPETITIONS.map(async (comp) => {
+        try {
+          const data = await this.fastGet(`/competitions/${comp.code}/standings`);
+          if (data?.standings) {
+            this.standingsCache.set(comp.code, data.standings);
+          }
+        } catch {
+          // Individual competition failures are non-fatal
+        }
+      }),
+    );
+  }
+
 
   /**
    * Fast request executor with lightweight rate limiter

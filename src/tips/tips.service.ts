@@ -5,7 +5,7 @@ import { Tip, TipResult } from './tip.entity';
 import { Fixture } from '../fixtures/fixture.entity';
 import { FootballDataOrgService } from '../football-data/football-data-org.service';
 import { FootballDataService } from '../football-data/football-data.service';
-import { PredictionEngineService, CandidateTip } from '../analytics/prediction-engine.service';
+import { PredictionEngineService } from '../analytics/prediction-engine.service';
 
 @Injectable()
 export class TipsService {
@@ -29,156 +29,185 @@ export class TipsService {
     force?: boolean,
   ): Promise<Tip[]> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
-    this.logger.log(`Starting Football-Data.org tip generation for: ${dateStr} (force=${!!force})`);
+    this.logger.log(`Starting tip generation for: ${dateStr} (force=${!!force})`);
 
     const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
-    const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
+    const endOfDay   = new Date(`${dateStr}T23:59:59.999Z`);
 
-    // 1. Check if tips are already generated for today
+    // 1. Check if tips already exist for today
     const existingTips = await this.tipRepository.find({
-      where: {
-        matchDate: Between(startOfDay, endOfDay),
-      },
+      where: { matchDate: Between(startOfDay, endOfDay) },
       relations: ['fixture'],
     });
 
     if (existingTips.length > 0) {
       if (!force) {
-        this.logger.log(
-          `Already generated ${existingTips.length} tips for ${dateStr}`,
-        );
+        this.logger.log(`Already have ${existingTips.length} tips for ${dateStr}`);
         return existingTips;
       }
-
-      // If force is true, remove only the pending ones to re-analyze
-      const pendingExisting = existingTips.filter(
-        (t) => t.result === TipResult.PENDING,
-      );
+      // Force: remove only pending tips to re-analyze
+      const pendingExisting = existingTips.filter((t) => t.result === TipResult.PENDING);
       if (pendingExisting.length > 0) {
         await this.tipRepository.remove(pendingExisting);
-        this.logger.log(
-          `Force refresh: Removed ${pendingExisting.length} pending tips to re-calculate`,
-        );
+        this.logger.log(`Force: removed ${pendingExisting.length} pending tips`);
       }
     }
 
-    const allCandidates: CandidateTip[] = [];
+    // 2. Collect fixtures — expand date window until we have at least 15 to analyze
+    let fixtures: Fixture[] = [];
+    const datesToTry: string[] = [dateStr];
 
-    // 2. Fetch fixtures from Football-Data.org
-    let fixtures = await this.footballDataOrgService.syncFixturesForDate(dateStr);
-
-    // If Football-Data.org returned 0 fixtures (e.g. no token configured or off-season date), fallback to FootballDataService or DB
-    if (!fixtures || fixtures.length === 0) {
-      fixtures = await this.footballDataService.syncFixturesForDate(dateStr);
-    }
-    if (!fixtures || fixtures.length === 0) {
-      fixtures = await this.fixtureRepository.find({
-        where: { matchDate: Between(startOfDay, endOfDay) },
-      });
+    // Build an expanding list: target date, then +1, -1, +2, -2, +3 days
+    for (const delta of [1, -1, 2, -2, 3]) {
+      const d = new Date(`${dateStr}T12:00:00.000Z`);
+      d.setUTCDate(d.getUTCDate() + delta);
+      datesToTry.push(d.toISOString().split('T')[0]);
     }
 
-    if (fixtures && fixtures.length > 0) {
-      const upcomingFixtures = fixtures.filter(
-        (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
+    for (const d of datesToTry) {
+      if (fixtures.length >= 15) break;
+
+      let dayFixtures = await this.footballDataOrgService.syncFixturesForDate(d);
+      if (!dayFixtures || dayFixtures.length === 0) {
+        dayFixtures = await this.footballDataService.syncFixturesForDate(d);
+      }
+      if (!dayFixtures || dayFixtures.length === 0) {
+        const s = new Date(`${d}T00:00:00.000Z`);
+        const e = new Date(`${d}T23:59:59.999Z`);
+        dayFixtures = await this.fixtureRepository.find({ where: { matchDate: Between(s, e) } });
+      }
+
+      if (dayFixtures && dayFixtures.length > 0) {
+        // Prefer fixtures not already in our list
+        const newOnes = dayFixtures.filter(
+          (f) => !fixtures.some((existing) => existing.id === f.id),
+        );
+        fixtures.push(...newOnes);
+        this.logger.log(`Date ${d}: added ${newOnes.length} fixtures (total pool: ${fixtures.length})`);
+      }
+    }
+
+    if (!fixtures || fixtures.length === 0) {
+      this.logger.warn(`No fixtures found for any date around ${dateStr}`);
+      return [];
+    }
+
+    // 3. Prefer upcoming (scheduled) fixtures, fall back to all if not enough
+    const upcoming = fixtures.filter(
+      (f) => f.status === 'NS' || new Date(f.matchDate) >= new Date(),
+    );
+    const pool = upcoming.length >= 5 ? upcoming : fixtures;
+
+    // Sample up to 50 fixtures for analysis
+    const sampleFixtures = pool.slice(0, 50);
+
+    // 4. Analyze all sampled fixtures in strict mode — no early exit
+    const allCandidates = await this.analyzeFixtures(sampleFixtures, false);
+
+    // 5. If strict mode didn't produce enough candidates, run relaxed mode on remaining fixtures
+    let candidates = allCandidates;
+    if (candidates.length < 5) {
+      this.logger.warn(
+        `Strict mode produced only ${candidates.length} candidates. Running relaxed mode...`,
       );
-      const targetFixtures =
-        upcomingFixtures.length >= 5 ? upcomingFixtures : fixtures;
-
-      const sampleFixtures = targetFixtures.slice(0, 25);
-
-      for (const fixture of sampleFixtures) {
-        try {
-          const compCode = this.footballDataOrgService.getCompetitionCode(
-            fixture.leagueId,
-            fixture.leagueName,
-          );
-
-          let homeStats = await this.footballDataOrgService.getTeamStats(
-            fixture.homeTeamId,
-            compCode,
-          );
-          let awayStats = await this.footballDataOrgService.getTeamStats(
-            fixture.awayTeamId,
-            compCode,
-          );
-
-          // Fallback 1: try API-Sports DB-cached stats when football-data.org has no data
-          if (!homeStats) {
-            homeStats = await this.footballDataService.getTeamStats(fixture.homeTeamId, fixture.leagueId);
-          }
-          if (!awayStats) {
-            awayStats = await this.footballDataService.getTeamStats(fixture.awayTeamId, fixture.leagueId);
-          }
-
-          // Fallback 2: use league-average defaults so the fixture is never silently skipped
-          const leagueAvgStats = {
-            goals: {
-              for:     { average: { home: '1.30', away: '1.10', total: '1.20' } },
-              against: { average: { home: '1.00', away: '1.30', total: '1.10' } },
-            },
-            form: 'WDLWD',
-          };
-          if (!homeStats) homeStats = leagueAvgStats;
-          if (!awayStats) awayStats = leagueAvgStats;
-
-          const candidates = this.predictionEngineService.analyzeFixture(
-            fixture,
-            homeStats,
-            awayStats,
-            [],
-            null,
-          );
-
-          allCandidates.push(...candidates);
-
-          if (allCandidates.length >= 8) {
-            break;
-          }
-        } catch (err) {
-          this.logger.error(
-            `Error analyzing fixture ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
-          );
+      const relaxedCandidates = await this.analyzeFixtures(sampleFixtures, true);
+      // Merge: add relaxed candidates not already covered by fixture ID
+      const strictFixtureIds = new Set(candidates.map((c) => c.fixture.id));
+      for (const rc of relaxedCandidates) {
+        if (!strictFixtureIds.has(rc.fixture.id)) {
+          candidates.push(rc);
         }
       }
     }
 
-    // 3. Select top 5-7 tips
-    const selected = this.predictionEngineService.selectDailyTips(
-      allCandidates,
-      6,
-    );
+    // 6. Select top 5–7 tips
+    const selected = this.predictionEngineService.selectDailyTips(candidates, 7);
+
     if (selected.length === 0) {
-      this.logger.warn(`No candidate tips met the criteria for ${dateStr}`);
+      this.logger.warn(`No tips met any criteria for ${dateStr} — check fixture & standings data`);
       return [];
     }
 
-    // 4. Save tips to database
+    // Guarantee at least 5 — if we got fewer log a warning but still save what we have
+    if (selected.length < 5) {
+      this.logger.warn(`Only ${selected.length} tips generated for ${dateStr} (target: 5-7)`);
+    }
+
+    // 7. Save tips to database
     const savedTips: Tip[] = [];
     for (let i = 0; i < selected.length; i++) {
       const item = selected[i];
       const tip = this.tipRepository.create({
-        fixtureId: item.fixture.id,
-        matchDate: item.fixture.matchDate,
-        leagueName: item.fixture.leagueName,
-        homeTeamName: item.fixture.homeTeamName,
-        awayTeamName: item.fixture.awayTeamName,
-        market: item.market,
-        prediction: item.prediction,
-        odds: item.odds,
+        fixtureId:      item.fixture.id,
+        matchDate:      item.fixture.matchDate,
+        leagueName:     item.fixture.leagueName,
+        homeTeamName:   item.fixture.homeTeamName,
+        awayTeamName:   item.fixture.awayTeamName,
+        market:         item.market,
+        prediction:     item.prediction,
+        odds:           item.odds,
         confidenceScore: item.confidenceScore,
-        isFree: i === 0, // Mark #1 confidence tip as free teaser
-        result: TipResult.PENDING,
-        factors: item.factors,
+        isFree:         i === 0,
+        result:         TipResult.PENDING,
+        factors:        item.factors,
       });
-
       savedTips.push(await this.tipRepository.save(tip));
     }
 
-    this.logger.log(
-      `Successfully generated and saved ${savedTips.length} tips for ${dateStr}`,
-    );
+    this.logger.log(`Saved ${savedTips.length} tips for ${dateStr}`);
     return savedTips;
   }
+
+  /**
+   * Shared fixture analysis loop used by generateDailyTips in both strict and relaxed modes.
+   */
+  private async analyzeFixtures(fixtures: Fixture[], relaxed: boolean): Promise<import('../analytics/prediction-engine.service').CandidateTip[]> {
+    const candidates: import('../analytics/prediction-engine.service').CandidateTip[] = [];
+
+    const leagueAvgStats = {
+      goals: {
+        for:     { average: { home: '1.30', away: '1.10', total: '1.20' } },
+        against: { average: { home: '1.00', away: '1.30', total: '1.10' } },
+      },
+      form: 'WDLWD',
+    };
+
+    for (const fixture of fixtures) {
+      try {
+        const compCode = this.footballDataOrgService.getCompetitionCode(
+          fixture.leagueId,
+          fixture.leagueName,
+        );
+
+        let homeStats = await this.footballDataOrgService.getTeamStats(fixture.homeTeamId, compCode);
+        let awayStats = await this.footballDataOrgService.getTeamStats(fixture.awayTeamId, compCode);
+
+        if (!homeStats) homeStats = await this.footballDataService.getTeamStats(fixture.homeTeamId, fixture.leagueId);
+        if (!awayStats) awayStats = await this.footballDataService.getTeamStats(fixture.awayTeamId, fixture.leagueId);
+
+        if (!homeStats) homeStats = leagueAvgStats;
+        if (!awayStats) awayStats = leagueAvgStats;
+
+        const fixtureCandidates = this.predictionEngineService.analyzeFixture(
+          fixture,
+          homeStats,
+          awayStats,
+          [],
+          null,
+          relaxed,
+        );
+
+        candidates.push(...fixtureCandidates);
+      } catch (err) {
+        this.logger.error(
+          `Error analyzing ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
+        );
+      }
+    }
+
+    return candidates;
+  }
+
 
   /**
    * Settle pending tips against final match results

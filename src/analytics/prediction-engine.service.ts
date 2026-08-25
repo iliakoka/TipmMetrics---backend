@@ -37,6 +37,7 @@ export class PredictionEngineService {
     awayStats: any | null,
     h2h: any[],
     bookmakerOdds?: any,
+    relaxed = false,
   ): CandidateTip[] {
     // 1. Strict Data Verification: if either team lacks goal statistics, SKIP!
     if (!homeStats?.goals?.for?.average || !awayStats?.goals?.for?.average) {
@@ -187,9 +188,16 @@ export class PredictionEngineService {
       }),
     };
 
+    // Thresholds: strict mode vs relaxed mode (used when not enough candidates are found)
+    const winThreshold       = relaxed ? 0.38 : 0.45;
+    const dcThreshold        = relaxed ? 0.52 : 0.60;
+    const goalsThreshold     = relaxed ? 0.42 : 0.48;
+    const oddsMin            = relaxed ? 1.40 : 1.50;
+    const oddsMax            = relaxed ? 2.80 : 2.50;
+
     // --- MARKET A: Match Winner (Home Win / Away Win) ---
     const homeWinOdds = extractedOdds.homeWin || Number((1 / (probHomeWin * 0.94)).toFixed(2));
-    if (this.isTargetOdds(homeWinOdds) && probHomeWin > 0.45) {
+    if (this.isTargetOdds(homeWinOdds, oddsMin, oddsMax) && probHomeWin > winThreshold) {
       const confidence = this.computeConfidence(probHomeWin, homeWinOdds);
       candidates.push({
         fixture,
@@ -207,7 +215,7 @@ export class PredictionEngineService {
     }
 
     const awayWinOdds = extractedOdds.awayWin || Number((1 / (probAwayWin * 0.94)).toFixed(2));
-    if (this.isTargetOdds(awayWinOdds) && probAwayWin > 0.45) {
+    if (this.isTargetOdds(awayWinOdds, oddsMin, oddsMax) && probAwayWin > winThreshold) {
       const confidence = this.computeConfidence(probAwayWin, awayWinOdds);
       candidates.push({
         fixture,
@@ -226,7 +234,7 @@ export class PredictionEngineService {
 
     // --- MARKET B: Double Chance (1X or X2) ---
     const dc1XOdds = extractedOdds.doubleChance1X || Number((1 / (prob1X * 0.96)).toFixed(2));
-    if (this.isTargetOdds(dc1XOdds) && prob1X > 0.60) {
+    if (this.isTargetOdds(dc1XOdds, oddsMin, oddsMax) && prob1X > dcThreshold) {
       const confidence = this.computeConfidence(prob1X, dc1XOdds);
       candidates.push({
         fixture,
@@ -244,7 +252,7 @@ export class PredictionEngineService {
     }
 
     const dcX2Odds = extractedOdds.doubleChanceX2 || Number((1 / (probX2 * 0.96)).toFixed(2));
-    if (this.isTargetOdds(dcX2Odds) && probX2 > 0.60) {
+    if (this.isTargetOdds(dcX2Odds, oddsMin, oddsMax) && probX2 > dcThreshold) {
       const confidence = this.computeConfidence(probX2, dcX2Odds);
       candidates.push({
         fixture,
@@ -264,7 +272,7 @@ export class PredictionEngineService {
     // --- MARKET C: Goals (Over 2.5 / Under 2.5) ---
     const over25Odds = extractedOdds.over25 || Number((1 / (probOver2_5 * 0.95)).toFixed(2));
     const combinedOverProb = probOver2_5 * 0.7 + h2hOver25Rate * 0.3;
-    if (this.isTargetOdds(over25Odds) && combinedOverProb > 0.48) {
+    if (this.isTargetOdds(over25Odds, oddsMin, oddsMax) && combinedOverProb > goalsThreshold) {
       const confidence = this.computeConfidence(combinedOverProb, over25Odds);
       candidates.push({
         fixture,
@@ -285,7 +293,7 @@ export class PredictionEngineService {
     const probUnder2_5 = 1 - probOver2_5;
     const under25Odds = extractedOdds.under25 || Number((1 / (probUnder2_5 * 0.95)).toFixed(2));
     const combinedUnderProb = probUnder2_5 * 0.7 + (1 - h2hOver25Rate) * 0.3;
-    if (this.isTargetOdds(under25Odds) && combinedUnderProb > 0.48) {
+    if (this.isTargetOdds(under25Odds, oddsMin, oddsMax) && combinedUnderProb > goalsThreshold) {
       const confidence = this.computeConfidence(combinedUnderProb, under25Odds);
       candidates.push({
         fixture,
@@ -306,7 +314,7 @@ export class PredictionEngineService {
     // --- MARKET D: Both Teams To Score (BTTS: Yes / No) ---
     const bttsOdds = extractedOdds.bttsYes || Number((1 / (probBTTS * 0.95)).toFixed(2));
     const combinedBttsProb = probBTTS * 0.7 + h2hBttsRate * 0.3;
-    if (this.isTargetOdds(bttsOdds) && combinedBttsProb > 0.48) {
+    if (this.isTargetOdds(bttsOdds, oddsMin, oddsMax) && combinedBttsProb > goalsThreshold) {
       const confidence = this.computeConfidence(combinedBttsProb, bttsOdds);
       candidates.push({
         fixture,
@@ -327,7 +335,7 @@ export class PredictionEngineService {
     const probBTTSNo = 1 - probBTTS;
     const bttsNoOdds = extractedOdds.bttsNo || Number((1 / (probBTTSNo * 0.95)).toFixed(2));
     const combinedBttsNoProb = probBTTSNo * 0.7 + (1 - h2hBttsRate) * 0.3;
-    if (this.isTargetOdds(bttsNoOdds) && combinedBttsNoProb > 0.48) {
+    if (this.isTargetOdds(bttsNoOdds, oddsMin, oddsMax) && combinedBttsNoProb > goalsThreshold) {
       const confidence = this.computeConfidence(combinedBttsNoProb, bttsNoOdds);
       candidates.push({
         fixture,
@@ -347,6 +355,7 @@ export class PredictionEngineService {
 
     return candidates;
   }
+
 
   /**
    * Select top distinct tips strictly ranked by highest mathematical confidence and accuracy
@@ -371,8 +380,8 @@ export class PredictionEngineService {
 
   // --- Helper Analytics Functions ---
 
-  private isTargetOdds(odds: number): boolean {
-    return odds >= 1.50 && odds <= 2.50;
+  private isTargetOdds(odds: number, min = 1.50, max = 2.50): boolean {
+    return odds >= min && odds <= max;
   }
 
   private computeConfidence(probability: number, odds: number): number {
