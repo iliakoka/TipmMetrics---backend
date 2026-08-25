@@ -164,26 +164,37 @@ export class FootballDataOrgService {
     const playedHome = teamHome?.playedGames || Math.max(1, Math.floor(playedTotal / 2));
     const playedAway = teamAway?.playedGames || Math.max(1, Math.floor(playedTotal / 2));
 
-    const homeGoalsScored = teamHome ? teamHome.goalsFor / playedHome : teamTotal.goalsFor / playedTotal;
-    const homeGoalsConceded = teamHome ? teamHome.goalsAgainst / playedHome : teamTotal.goalsAgainst / playedTotal;
+    // Raw averages — may be 0 at the start of a season when no games have been played yet
+    const rawHomeScored = teamHome ? teamHome.goalsFor / playedHome : teamTotal.goalsFor / playedTotal;
+    const rawHomeConceded = teamHome ? teamHome.goalsAgainst / playedHome : teamTotal.goalsAgainst / playedTotal;
+    const rawAwayScored = teamAway ? teamAway.goalsFor / playedAway : teamTotal.goalsFor / playedTotal;
+    const rawAwayConceded = teamAway ? teamAway.goalsAgainst / playedAway : teamTotal.goalsAgainst / playedTotal;
+    const rawTotalScored = teamTotal.goalsFor / playedTotal;
+    const rawTotalConceded = teamTotal.goalsAgainst / playedTotal;
 
-    const awayGoalsScored = teamAway ? teamAway.goalsFor / playedAway : teamTotal.goalsFor / playedTotal;
-    const awayGoalsConceded = teamAway ? teamAway.goalsAgainst / playedAway : teamTotal.goalsAgainst / playedTotal;
+    // Apply league-average fallbacks BEFORE toFixed() so zero-game teams still produce valid stats.
+    // (0).toFixed(2) === "0.00" which is truthy, so `|| 1.3` after toFixed never fires.)
+    const homeGoalsScored   = rawHomeScored   > 0 ? rawHomeScored   : 1.30;
+    const homeGoalsConceded = rawHomeConceded > 0 ? rawHomeConceded : 1.00;
+    const awayGoalsScored   = rawAwayScored   > 0 ? rawAwayScored   : 1.10;
+    const awayGoalsConceded = rawAwayConceded > 0 ? rawAwayConceded : 1.30;
+    const totalScored       = rawTotalScored  > 0 ? rawTotalScored  : 1.20;
+    const totalConceded     = rawTotalConceded > 0 ? rawTotalConceded : 1.10;
 
     return {
       goals: {
         for: {
           average: {
-            home: (homeGoalsScored || 1.3).toFixed(2),
-            away: (awayGoalsScored || 1.1).toFixed(2),
-            total: (teamTotal.goalsFor / playedTotal || 1.2).toFixed(2),
+            home: homeGoalsScored.toFixed(2),
+            away: awayGoalsScored.toFixed(2),
+            total: totalScored.toFixed(2),
           },
         },
         against: {
           average: {
-            home: (homeGoalsConceded || 1.0).toFixed(2),
-            away: (awayGoalsConceded || 1.3).toFixed(2),
-            total: (teamTotal.goalsAgainst / playedTotal || 1.1).toFixed(2),
+            home: homeGoalsConceded.toFixed(2),
+            away: awayGoalsConceded.toFixed(2),
+            total: totalConceded.toFixed(2),
           },
         },
       },

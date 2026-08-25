@@ -93,14 +93,33 @@ export class TipsService {
             fixture.leagueName,
           );
 
-          const homeStats = await this.footballDataOrgService.getTeamStats(
+          let homeStats = await this.footballDataOrgService.getTeamStats(
             fixture.homeTeamId,
             compCode,
           );
-          const awayStats = await this.footballDataOrgService.getTeamStats(
+          let awayStats = await this.footballDataOrgService.getTeamStats(
             fixture.awayTeamId,
             compCode,
           );
+
+          // Fallback 1: try API-Sports DB-cached stats when football-data.org has no data
+          if (!homeStats) {
+            homeStats = await this.footballDataService.getTeamStats(fixture.homeTeamId, fixture.leagueId);
+          }
+          if (!awayStats) {
+            awayStats = await this.footballDataService.getTeamStats(fixture.awayTeamId, fixture.leagueId);
+          }
+
+          // Fallback 2: use league-average defaults so the fixture is never silently skipped
+          const leagueAvgStats = {
+            goals: {
+              for:     { average: { home: '1.30', away: '1.10', total: '1.20' } },
+              against: { average: { home: '1.00', away: '1.30', total: '1.10' } },
+            },
+            form: 'WDLWD',
+          };
+          if (!homeStats) homeStats = leagueAvgStats;
+          if (!awayStats) awayStats = leagueAvgStats;
 
           const candidates = this.predictionEngineService.analyzeFixture(
             fixture,
