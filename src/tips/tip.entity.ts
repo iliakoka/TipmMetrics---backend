@@ -20,12 +20,12 @@ export class Tip {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'uuid' })
-  fixtureId: string;
+  @Column({ type: 'uuid', nullable: true })
+  fixtureId: string | null;
 
-  @ManyToOne(() => Fixture, (fixture) => fixture.tips, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Fixture, (fixture) => fixture.tips, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'fixtureId' })
-  fixture: Fixture;
+  fixture: Fixture | null;
 
   @Column({ type: 'timestamptz' })
   matchDate: Date;
