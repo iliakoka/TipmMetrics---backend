@@ -71,20 +71,5 @@ export class SchedulerService implements OnModuleInit {
   }
 
 
-  /**
-   * LATE SETTLEMENT — Every day at 23:45 PM UTC
-   * Catch any matches that finished late in the evening.
-   */
-  @Cron('45 23 * * *')
-  async handleLateSettlement() {
-    this.logger.log('[CRON 23:45 UTC] Running late settlement check...');
-    try {
-      const result = await this.tipsService.settleDailyTips();
-      this.logger.log(
-        `[CRON 23:45 UTC] Late settlement — ${result.settled} settled, ${result.won} WON, ${result.lost} LOST`,
-      );
-    } catch (err) {
-      this.logger.error(`[CRON 23:45 UTC] Late settlement error: ${err.message}`);
-    }
-  }
 }
+
