@@ -273,9 +273,8 @@ export class MatchAnalyzerService {
       homeWinPct, awayWinPct, weather,
     });
 
-    // Build odds map for this match
-    const oddsKey = `${homeTeam}|${awayTeam}`;
-    const bookmakerOdds = oddsMap.get(oddsKey) || {};
+    // Build odds map for this match using fuzzy name matching
+    const bookmakerOdds = this.findOdds(oddsMap, homeTeam, awayTeam);
 
     const reasoning = this.buildReasoning({
       homeTeam, awayTeam, homeFormPts, awayFormPts,
@@ -479,5 +478,64 @@ export class MatchAnalyzerService {
     reasons.push(`Predicted: ${prediction.market} @ ~${prediction.probability}% probability`);
 
     return reasons;
+  }
+
+  // ─── Fuzzy odds lookup ─────────────────────────────────────────────────────
+
+  /**
+   * Strip common club suffixes and normalize to lowercase for fuzzy comparison.
+   * "Manchester United FC" → "manchester united"
+   * "Man Utd"             → "man utd"
+   * "Atlético Madrid CF"  → "atletico madrid"
+   */
+  private normalizeTeamName(name: string): string {
+    return name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')  // remove accents: é→e, ü→u
+      .replace(/\b(fc|afc|cf|sc|ac|bc|bk|fk|sk|if|rfc|utd|united)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Check whether two team names refer to the same club.
+   * Tries exact normalized match first, then checks if one is a substring of the other.
+   */
+  private teamsMatch(a: string, b: string): boolean {
+    const na = this.normalizeTeamName(a);
+    const nb = this.normalizeTeamName(b);
+    if (na === nb) return true;
+    // Substring match: "man city" inside "manchester city" or vice-versa
+    if (na.includes(nb) || nb.includes(na)) return true;
+    // Token overlap: at least 2 tokens in common (handles "Real Madrid" vs "Real Madrid CF")
+    const tokensA = new Set(na.split(' ').filter((t) => t.length > 2));
+    const tokensB = nb.split(' ').filter((t) => t.length > 2);
+    const overlap = tokensB.filter((t) => tokensA.has(t)).length;
+    return overlap >= 2 || (tokensA.size === 1 && overlap >= 1);
+  }
+
+  /**
+   * Find bookmaker odds for a fixture using fuzzy home+away team name matching.
+   * Falls back to {} if no Odds API entry matches.
+   */
+  private findOdds(
+    oddsMap: Map<string, Record<string, number>>,
+    homeTeam: string,
+    awayTeam: string,
+  ): Record<string, number> {
+    // 1. Exact match first (fast path)
+    const exact = oddsMap.get(`${homeTeam}|${awayTeam}`);
+    if (exact) return exact;
+
+    // 2. Fuzzy match
+    for (const [key, odds] of oddsMap) {
+      const [h, a] = key.split('|');
+      if (this.teamsMatch(homeTeam, h) && this.teamsMatch(awayTeam, a)) {
+        return odds;
+      }
+    }
+
+    return {};
   }
 }

@@ -2,11 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { Tip, TipResult } from './tip.entity';
-import { Fixture } from '../fixtures/fixture.entity';
-import { FootballDataOrgService } from '../football-data/football-data-org.service';
 import { FootballDataService } from '../football-data/football-data.service';
-import { PredictionEngineService } from '../analytics/prediction-engine.service';
-import { OddsApiService } from '../odds/odds-api.service';
 import { MatchAnalyzerService } from '../match-analysis/match-analyzer.service';
 
 @Injectable()
@@ -16,25 +12,20 @@ export class TipsService {
   constructor(
     @InjectRepository(Tip)
     private tipRepository: Repository<Tip>,
-    @InjectRepository(Fixture)
-    private fixtureRepository: Repository<Fixture>,
-    private footballDataOrgService: FootballDataOrgService,
     private footballDataService: FootballDataService,
-    private predictionEngineService: PredictionEngineService,
-    private oddsApiService: OddsApiService,
     private matchAnalyzerService: MatchAnalyzerService,
   ) {}
 
   /**
    * Generates 5–7 smart daily tips.
    *
-   * PRIMARY PATH (smart):
+   * FLOW:
    *   1. MatchAnalyzerService: full analysis (form, H2H, standings, weather) via API-Football
-   *   2. Cross-reference with The Odds API: pick prediction where odds are in 1.65–2.20
-   *   3. Select top 5–7 by analysis score
+   *   2. Cross-reference with The Odds API: pick predictions where bookmaker odds are 1.65–2.20
+   *   3. Select top 5–7 by confidence score
    *
-   * FALLBACK PATH (odds-only):
-   *   If analyzer returns nothing → use bookmaker consensus odds directly
+   * If analysis produces fewer than 5 tips (API limit, no fixtures, etc.) → return what we have.
+   * No fallback generation — all tips must originate from API-Football data so settlement works.
    */
   async generateDailyTips(
     targetDate?: string,
@@ -63,30 +54,18 @@ export class TipsService {
       }
     }
 
-    // 2. PRIMARY — Smart match analysis + odds cross-reference
+    // 2. Smart match analysis + Odds API cross-reference (only path)
     try {
       const analyses = await this.matchAnalyzerService.analyzeMatchesForDate(dateStr);
       if (analyses.length > 0) {
         const tips = await this.selectAndSaveSmartTips(analyses, dateStr);
-        if (tips.length >= 3) return tips;
-        this.logger.warn(`Smart path produced only ${tips.length} tips — trying fallback`);
+        if (tips.length > 0) return tips;
       }
+      this.logger.warn(`Smart analysis produced 0 tips for ${dateStr} — no fixtures in target leagues or no odds in 1.65-2.20 range`);
     } catch (err) {
       this.logger.error(`Smart analysis failed: ${err.message}`);
     }
 
-    // 3. FALLBACK — Pure bookmaker consensus (Odds API only)
-    this.logger.warn(`Falling back to Odds API consensus for ${dateStr}`);
-    try {
-      const oddsCandidates = await this.oddsApiService.getCandidatesForDate(dateStr);
-      if (oddsCandidates.length >= 3) {
-        return this.saveOddsCandidates(oddsCandidates, dateStr);
-      }
-    } catch (err) {
-      this.logger.error(`Odds API fallback failed: ${err.message}`);
-    }
-
-    this.logger.warn(`No tips generated for ${dateStr}`);
     return [];
   }
 
@@ -202,265 +181,38 @@ export class TipsService {
   }
 
   /**
-   * Save Odds API candidates as tips (fallback path — no form/H2H analysis).
-   */
-  private async saveOddsCandidates(
-    candidates: import('../odds/odds-api.service').OddsCandidate[],
-    dateStr: string,
-  ): Promise<Tip[]> {
-    const ODD_MIN = 1.65;
-    const ODD_MAX = 2.20;
-
-    // Filter to target odds range
-    const inRange = candidates.filter(
-      (c) => c.consensusOdds >= ODD_MIN && c.consensusOdds <= ODD_MAX,
-    );
-
-    inRange.sort((a, b) => b.confidenceScore - a.confidenceScore);
-
-    const selected: typeof inRange = [];
-    const marketCounts: Record<string, number> = {};
-    const usedMatches = new Set<string>();
-
-    for (const c of inRange) {
-      const matchKey = `${c.homeTeam}|${c.awayTeam}`;
-      if (usedMatches.has(matchKey)) continue;
-      const mc = marketCounts[c.market] ?? 0;
-      if (mc >= 2) continue;
-
-      selected.push(c);
-      usedMatches.add(matchKey);
-      marketCounts[c.market] = mc + 1;
-      if (selected.length >= 7) break;
-    }
-
-    if (selected.length < 5) {
-      this.logger.warn(`Odds fallback: only ${selected.length} tips in 1.65-2.20 range for ${dateStr}`);
-    }
-
-    const savedTips: Tip[] = [];
-    for (let i = 0; i < selected.length; i++) {
-      const c = selected[i];
-      const tip = this.tipRepository.create({
-        fixtureId:       null,
-        matchDate:       c.commenceTime,
-        leagueName:      c.leagueName,
-        homeTeamName:    c.homeTeam,
-        awayTeamName:    c.awayTeam,
-        homeTeamLogo:    null,
-        awayTeamLogo:    null,
-        market:          c.market,
-        prediction:      c.prediction,
-        odds:            c.consensusOdds,
-        confidenceScore: c.confidenceScore,
-        isFree:          i === 0,
-        result:          TipResult.PENDING,
-        factors: {
-          source:             'odds-api-fallback',
-          impliedProbability: c.impliedProbability,
-          bookmakerCount:     c.bookmakerCount,
-        },
-      });
-      const saved = await this.tipRepository.save(tip);
-      savedTips.push(saved);
-    }
-
-    this.logger.log(`Saved ${savedTips.length} Odds API fallback tips for ${dateStr}`);
-    return savedTips;
-  }
-
-  /**
-   * Last-resort tip generation: picks top 7 upcoming fixtures and generates
-   * one OVER_2_5 tip per match using only Poisson λ, no odds/threshold filter.
-   * Guarantees output even when standings data is completely unavailable.
-   */
-  private async generateLastResortTips(fixtures: Fixture[], dateStr: string): Promise<Tip[]> {
-    const savedTips: Tip[] = [];
-    const leagueAvgLambdaHome = 1.47;
-    const leagueAvgLambdaAway = 0.76;
-
-    const picked = fixtures.slice(0, 7);
-
-    for (let i = 0; i < picked.length; i++) {
-      const fixture = picked[i];
-      // OVER_2_5: with average lambdas, P(goals > 2.5) ≈ 52%
-      const tip = this.tipRepository.create({
-        fixtureId:      fixture.id,
-        matchDate:      fixture.matchDate,
-        leagueName:     fixture.leagueName,
-        homeTeamName:   fixture.homeTeamName,
-        awayTeamName:   fixture.awayTeamName,
-        homeTeamLogo:   fixture.homeTeamLogo ?? null,
-        awayTeamLogo:   fixture.awayTeamLogo ?? null,
-        market:         'OVER_2_5',
-        prediction:     'Over 2.5 Goals',
-        odds:           1.85,
-        confidenceScore: 52.0,
-        isFree:         i === 0,
-        result:         TipResult.PENDING,
-        factors:        { source: 'last_resort', note: 'Generated using league average Poisson, no team stats available' },
-      });
-      savedTips.push(await this.tipRepository.save(tip));
-    }
-
-    this.logger.log(`Last-resort: saved ${savedTips.length} tips for ${dateStr}`);
-    return savedTips;
-  }
-
-  /**
-   * Shared fixture analysis loop used by generateDailyTips in both strict and relaxed modes.
-   */
-  private async analyzeFixtures(fixtures: Fixture[], relaxed: boolean): Promise<import('../analytics/prediction-engine.service').CandidateTip[]> {
-    const candidates: import('../analytics/prediction-engine.service').CandidateTip[] = [];
-
-    const leagueAvgStats = {
-      goals: {
-        for:     { average: { home: '1.30', away: '1.10', total: '1.20' } },
-        against: { average: { home: '1.00', away: '1.30', total: '1.10' } },
-      },
-      form: 'WDLWD',
-    };
-
-    for (const fixture of fixtures) {
-      try {
-        const compCode = this.footballDataOrgService.getCompetitionCode(
-          fixture.leagueId,
-          fixture.leagueName,
-        );
-
-        let homeStats = await this.footballDataOrgService.getTeamStats(fixture.homeTeamId, compCode);
-        let awayStats = await this.footballDataOrgService.getTeamStats(fixture.awayTeamId, compCode);
-
-        if (!homeStats) homeStats = await this.footballDataService.getTeamStats(fixture.homeTeamId, fixture.leagueId);
-        if (!awayStats) awayStats = await this.footballDataService.getTeamStats(fixture.awayTeamId, fixture.leagueId);
-
-        if (!homeStats) homeStats = leagueAvgStats;
-        if (!awayStats) awayStats = leagueAvgStats;
-
-        const fixtureCandidates = this.predictionEngineService.analyzeFixture(
-          fixture,
-          homeStats,
-          awayStats,
-          [],
-          null,
-          relaxed,
-        );
-
-        candidates.push(...fixtureCandidates);
-      } catch (err) {
-        this.logger.error(
-          `Error analyzing ${fixture.homeTeamName} vs ${fixture.awayTeamName}: ${err.message}`,
-        );
-      }
-    }
-
-    return candidates;
-  }
-
-  /**
-   * Returns true only for real senior men's football matches worth tipping.
-   * Blocks: basketball, other sports, youth/U21-U23, women's, reserve/B teams.
-   */
-  private isQualityFixture(fixture: Fixture): boolean {
-    const league = (fixture.leagueName || '').toLowerCase();
-    const home   = (fixture.homeTeamName || '').toLowerCase();
-    const away   = (fixture.awayTeamName || '').toLowerCase();
-
-    // Block non-football sports (basketball emoji, NBA, NFL, etc.)
-    if (fixture.leagueName?.includes('🏀')) return false;
-    if (fixture.leagueName?.includes('🏈')) return false;
-    if (league.includes('basketball') || league.includes('nba') || league.includes('nfl')) return false;
-
-    // Block youth / reserve competitions
-    const youthPattern = /\b(u\d{2}|youth|reserve|b team|ii$| b$| ii |junior|u18|u19|u20|u21|u22|u23)\b/i;
-    if (youthPattern.test(league) || youthPattern.test(home) || youthPattern.test(away)) return false;
-
-    // Block women's competitions
-    if (league.includes(' w ') || league.includes(' women') || league.includes("women's")
-        || home.endsWith(' w') || away.endsWith(' w')) return false;
-
-    // Block clearly low-quality or obscure cups
-    const blockedLeagues = [
-      'premier league cup', 'efl trophy', 'papa john', 'checkratrade',
-      'friendlies', 'friendly', 'pre-season', 'preseason', 'world cup qualification - concacaf',
-    ];
-    if (blockedLeagues.some((b) => league.includes(b))) return false;
-
-    return true;
-  }
-
-
-  /**
-   * Debug generation: shows exactly what fixtures/stats/candidates are produced
-   * for a date WITHOUT saving anything. Call GET /tips/debug?date=YYYY-MM-DD
+   * Debug generation: shows what the analyzer produces for a date WITHOUT saving.
+   * Call GET /tips/debug?date=YYYY-MM-DD
    */
   async debugGeneration(targetDate?: string): Promise<any> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
-    const leagueAvgStats = {
-      goals: {
-        for:     { average: { home: '1.30', away: '1.10', total: '1.20' } },
-        against: { average: { home: '1.00', away: '1.30', total: '1.10' } },
-      },
-      form: 'WDLWD',
-    };
-
-    // Fetch fixtures
-    let fixtures = await this.footballDataOrgService.syncFixturesForDate(dateStr);
-    if (!fixtures || fixtures.length === 0) {
-      fixtures = await this.footballDataService.syncFixturesForDate(dateStr);
-    }
-
-    const sample = (fixtures || []).slice(0, 10);
-    const fixtureDetails: any[] = [];
-
-    for (const fixture of sample) {
-      const compCode = this.footballDataOrgService.getCompetitionCode(fixture.leagueId, fixture.leagueName);
-      let homeStats = await this.footballDataOrgService.getTeamStats(fixture.homeTeamId, compCode);
-      let awayStats = await this.footballDataOrgService.getTeamStats(fixture.awayTeamId, compCode);
-      const homeSource = homeStats ? 'football-data.org' : (await this.footballDataService.getTeamStats(fixture.homeTeamId, fixture.leagueId) ? 'api-sports' : 'league-avg');
-      const awaySource = awayStats ? 'football-data.org' : (await this.footballDataService.getTeamStats(fixture.awayTeamId, fixture.leagueId) ? 'api-sports' : 'league-avg');
-      if (!homeStats) homeStats = leagueAvgStats;
-      if (!awayStats) awayStats = leagueAvgStats;
-
-      const candidates = this.predictionEngineService.analyzeFixture(fixture, homeStats, awayStats, [], null, false);
-      const relaxedCandidates = this.predictionEngineService.analyzeFixture(fixture, homeStats, awayStats, [], null, true);
-
-      fixtureDetails.push({
-        match: `${fixture.homeTeamName} vs ${fixture.awayTeamName}`,
-        league: fixture.leagueName,
-        compCode,
-        status: fixture.status,
-        homeStatsSource: homeSource,
-        awayStatsSource: awaySource,
-        homeGoalsFor: homeStats.goals.for.average,
-        awayGoalsFor: awayStats.goals.for.average,
-        strictCandidates: candidates.length,
-        relaxedCandidates: relaxedCandidates.length,
-        markets: candidates.map(c => `${c.market} odds=${c.odds} conf=${c.confidenceScore}`),
-      });
-    }
-
+    const analyses = await this.matchAnalyzerService.analyzeMatchesForDate(dateStr);
     return {
       date: dateStr,
-      totalFixtures: (fixtures || []).length,
-      sampleAnalyzed: sample.length,
-      fixtures: fixtureDetails,
+      matchesAnalyzed: analyses.length,
+      analyses: analyses.map((a) => ({
+        match: `${a.homeTeam} vs ${a.awayTeam}`,
+        league: a.leagueName,
+        predictedMarket: a.predictedMarket,
+        predictedProbability: a.predictedProbability,
+        totalScore: a.totalScore,
+        bookmakerOdds: a.bookmakerOdds,
+        reasoning: a.reasoning,
+      })),
     };
   }
 
   /**
    * Settle pending tips against final match results.
-   * Handles both fixture-linked tips and fixture-less tips (from Odds API / smart analyzer).
+   * All tips originate from API-Football, so team names always match the result lookup.
    */
   async settleDailyTips(targetDate?: string): Promise<{ settled: number; won: number; lost: number }> {
     const dateStr = targetDate || new Date().toISOString().split('T')[0];
     this.logger.log(`Settling tips for date: ${dateStr}`);
 
-    // Update fixture scores in DB (for fixture-linked tips)
-    await Promise.all([
-      this.footballDataOrgService.updateFinishedFixtures(dateStr),
-      this.footballDataService.updateFinishedFixtures(dateStr),
-    ]);
+    // Update fixture scores in DB then fetch finished matches
+    await this.footballDataService.updateFinishedFixtures(dateStr);
+
 
     // Fetch finished matches from API-Football for fixture-less tip resolution
     const finishedRaw = await this.footballDataService.getFixturesForDate(dateStr)

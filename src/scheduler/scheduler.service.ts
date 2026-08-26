@@ -70,29 +70,6 @@ export class SchedulerService implements OnModuleInit {
     }
   }
 
-  /**
-   * SAFETY NET — Every day at 09:00 AM UTC
-   * If fewer than 5 tips exist (generation failed or API limit was hit),
-   * force-regenerate using the Odds API fallback.
-   */
-  @Cron('0 9 * * *')
-  async handleSafetyRetry() {
-    this.logger.log('[CRON 09:00 UTC] Checking tip count...');
-    try {
-      const todayTips = await this.tipsService.getTodayTips();
-      if (todayTips.length < 5) {
-        this.logger.warn(
-          `[CRON 09:00 UTC] Only ${todayTips.length} tips — force-regenerating...`,
-        );
-        const tips = await this.tipsService.generateDailyTips(undefined, true);
-        this.logger.log(`[CRON 09:00 UTC] Safety retry produced ${tips.length} tips.`);
-      } else {
-        this.logger.log(`[CRON 09:00 UTC] ${todayTips.length} tips OK — no retry needed.`);
-      }
-    } catch (err) {
-      this.logger.error(`[CRON 09:00 UTC] Safety retry error: ${err.message}`);
-    }
-  }
 
   /**
    * LATE SETTLEMENT — Every day at 23:45 PM UTC
