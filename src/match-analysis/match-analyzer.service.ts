@@ -141,12 +141,9 @@ export class MatchAnalyzerService {
       oddsMap.get(key)![c.market] = c.consensusOdds;
     }
 
-    // Step 3: Pre-load standings for all relevant leagues (batched, cached)
-    await this.preloadStandings();
-
-    // Step 4: Analyze top 12 fixtures (budget: ~24 API-Football requests)
+    // Step 3: Analyze top 8 fixtures (fast execution with DB cache)
     const results: MatchAnalysis[] = [];
-    const toAnalyze = targetFixtures.slice(0, 12);
+    const toAnalyze = targetFixtures.slice(0, 8);
 
     for (const fixture of toAnalyze) {
       try {
@@ -161,15 +158,6 @@ export class MatchAnalyzerService {
     results.sort((a, b) => b.totalScore - a.totalScore);
     this.logger.log(`Analysis complete: ${results.length} matches scored`);
     return results;
-  }
-
-  private async preloadStandings(): Promise<void> {
-    for (const league of ANALYSIS_LEAGUES) {
-      if (!this.standingsCache.has(league.id)) {
-        const table = await this.footballDataService.getStandings(league.id, league.season);
-        this.standingsCache.set(league.id, table);
-      }
-    }
   }
 
   private async analyzeOneMatch(

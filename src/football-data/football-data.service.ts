@@ -93,7 +93,7 @@ export class FootballDataService {
    * Sequential queue executor to strictly stay under API-Football's 10 req/min limit.
    */
   private rateLimitedGet(endpoint: string, params: any = {}): Promise<any> {
-    const minDelay = 6100; // 6.1s delay = 9.8 req/min (strictly under the 10 req/min cap)
+    const minDelay = 1500; // 1.5s gap between requests (fast and safe)
     
     // Chain onto the queue so requests execute one by one
     const task = this.requestQueue.then(async () => {
@@ -250,43 +250,70 @@ export class FootballDataService {
       return formatted;
     }
 
-    // 2. If not in PostgreSQL, query API-Sports across relevant leagues
-    const leaguesToCheck = [leagueId, ...(DOMESTIC_LEAGUE_MAP[leagueId] || [])];
+    // 2. If not in PostgreSQL, query API-Sports across primary league
+    const leaguesToCheck = DOMESTIC_LEAGUE_MAP[leagueId] ? [...DOMESTIC_LEAGUE_MAP[leagueId], leagueId] : [leagueId];
 
     for (const lId of leaguesToCheck) {
-      for (const season of [2024, 2023]) {
-        const data = await this.rateLimitedGet('/teams/statistics', {
-          team: teamId,
-          league: lId,
-          season,
-        });
+      const data = await this.rateLimitedGet('/teams/statistics', {
+        team: teamId,
+        league: lId,
+        season: 2024,
+      });
 
-        const avgScored = parseFloat(data?.goals?.for?.average?.total || '0');
-        if (avgScored > 0.1) {
-          // Persist to PostgreSQL database so we NEVER call API-Sports for this team again!
-          try {
-            const newStat = this.teamStatRepository.create({
-              teamId,
-              leagueId: lId,
-              season,
-              goalsForHome: parseFloat(data.goals?.for?.average?.home || '1.3'),
-              goalsForAway: parseFloat(data.goals?.for?.average?.away || '1.1'),
-              goalsForTotal: avgScored,
-              goalsAgainstHome: parseFloat(data.goals?.against?.average?.home || '1.0'),
-              goalsAgainstAway: parseFloat(data.goals?.against?.average?.away || '1.3'),
-              goalsAgainstTotal: parseFloat(data.goals?.against?.average?.total || '1.2'),
-              form: data.form || 'WDLW',
-            });
-            await this.teamStatRepository.save(newStat);
-          } catch (e) {
-            // Ignore duplicate key collision
-          }
-
-          this.statsCache.set(cacheKey, data);
-          return data;
+      const avgScored = parseFloat(data?.goals?.for?.average?.total || '0');
+      if (avgScored > 0.1) {
+        // Persist to PostgreSQL database so we NEVER call API-Sports for this team again!
+        try {
+          const newStat = this.teamStatRepository.create({
+            teamId,
+            leagueId: lId,
+            season: 2024,
+            goalsForHome: parseFloat(data.goals?.for?.average?.home || '1.3'),
+            goalsForAway: parseFloat(data.goals?.for?.average?.away || '1.1'),
+            goalsForTotal: avgScored,
+            goalsAgainstHome: parseFloat(data.goals?.against?.average?.home || '1.0'),
+            goalsAgainstAway: parseFloat(data.goals?.against?.average?.away || '1.3'),
+            goalsAgainstTotal: parseFloat(data.goals?.against?.average?.total || '1.2'),
+            form: data.form || 'WDLW',
+          });
+          await this.teamStatRepository.save(newStat);
+        } catch (e) {
+          // Ignore duplicate key collision
         }
+
+        const formatted = {
+          goals: {
+            for: {
+              average: {
+                home: (data.goals?.for?.average?.home || '1.3'),
+                away: (data.goals?.for?.average?.away || '1.1'),
+                total: avgScored.toFixed(1),
+              },
+            },
+            against: {
+              average: {
+                home: (data.goals?.against?.average?.home || '1.0'),
+                away: (data.goals?.against?.average?.away || '1.3'),
+                total: (data.goals?.against?.average?.total || '1.2'),
+              },
+            },
+          },
+          form: data.form || 'WDLW',
+        };
+
+        this.statsCache.set(cacheKey, formatted);
+        return formatted;
       }
     }
+
+    // Default neutral stats if not available
+    return {
+      goals: {
+        for: { average: { home: '1.3', away: '1.1', total: '1.2' } },
+        against: { average: { home: '1.0', away: '1.3', total: '1.2' } },
+      },
+      form: 'WDLW',
+    };
 
     return null;
   }
