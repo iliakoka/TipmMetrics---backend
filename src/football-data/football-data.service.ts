@@ -71,6 +71,9 @@ export class FootballDataService {
     private teamStatRepository: Repository<TeamStat>,
   ) {
     const apiKey = this.configService.get<string>('FOOTBALL_API_KEY');
+    if (!apiKey) {
+      this.logger.error('CRITICAL: FOOTBALL_API_KEY environment variable is missing or empty!');
+    }
     const baseURL =
       this.configService.get<string>('FOOTBALL_API_BASE_URL') ||
       'https://v3.football.api-sports.io';
@@ -78,7 +81,7 @@ export class FootballDataService {
     this.client = axios.create({
       baseURL,
       headers: {
-        'x-apisports-key': apiKey,
+        'x-apisports-key': apiKey || '',
       },
       timeout: 10000,
     });
@@ -98,13 +101,13 @@ export class FootballDataService {
 
     try {
       const res = await this.client.get(endpoint, { params });
-      if (res.data?.errors?.rateLimit) {
-        this.logger.warn(`API-Sports Rate Limit: ${res.data.errors.rateLimit}`);
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (res.data?.errors && (Array.isArray(res.data.errors) ? res.data.errors.length > 0 : Object.keys(res.data.errors).length > 0)) {
+        this.logger.error(`API-Football error for ${endpoint}: ${JSON.stringify(res.data.errors)}`);
         return null;
       }
       return res.data?.response || null;
     } catch (err) {
+      this.logger.error(`API-Football call ${endpoint} failed: ${err.message}`);
       return null;
     }
   }
