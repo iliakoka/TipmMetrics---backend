@@ -214,9 +214,8 @@ export class TipsService {
     await this.footballDataService.updateFinishedFixtures(dateStr);
 
 
-    // Fetch finished matches from API-Football for fixture-less tip resolution
-    const finishedRaw = await this.footballDataService.getFixturesForDate(dateStr)
-      .then((all) => all.filter((f) => f.fixture?.status?.short === 'FT'))
+    // Fetch finished (FT) matches from API-Football for team-name-based tip resolution
+    const finishedRaw = await this.footballDataService.getFinishedFixturesForDate(dateStr)
       .catch(() => []);
 
     // Build a lookup: "HomeTeam|AwayTeam" -> { homeGoals, awayGoals }

@@ -292,12 +292,20 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch upcoming fixtures for a date without saving to DB.
-   * Returns raw API-Sports fixture objects for match analysis.
+   * Fetch upcoming/live fixtures for a date (used by match analyzer).
+   * Only returns NS, 1H, HT, 2H statuses.
    */
   async getFixturesForDate(dateStr: string): Promise<any[]> {
     return (await this.rateLimitedGet('/fixtures', { date: dateStr, status: 'NS-1H-HT-2H' })) || [];
   }
+
+  /**
+   * Fetch finished (FT) fixtures for a date (used by settlement).
+   */
+  async getFinishedFixturesForDate(dateStr: string): Promise<any[]> {
+    return (await this.rateLimitedGet('/fixtures', { date: dateStr, status: 'FT' })) || [];
+  }
+
 
   /**
    * Fetch last N finished matches for a team in a league (for recent form analysis)
