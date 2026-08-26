@@ -252,9 +252,8 @@ export class TipsService {
         hg = tip.fixture.homeGoals;
         ag = tip.fixture.awayGoals;
       } else {
-        // Priority 2: API-Football finished match lookup by team name
-        const lookupKey = `${tip.homeTeamName}|${tip.awayTeamName}`;
-        const found = resultMap.get(lookupKey);
+        // Priority 2: fuzzy team name lookup in API-Football result map
+        const found = this.fuzzyFindResult(resultMap, tip.homeTeamName, tip.awayTeamName);
         if (found) {
           hg = found.hg;
           ag = found.ag;
@@ -427,5 +426,47 @@ export class TipsService {
 
   async getAnalyticsStats() {
     return this.getStats();
+  }
+
+  // ─── Fuzzy team name matching (used by settlement) ─────────────────────────
+
+  private normalizeTeamName(name: string): string {
+    return (name || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')   // strip accents: é→e, ü→u
+      .replace(/\b(fc|afc|cf|sc|ac|bc|bk|fk|sk|if|rfc|utd|united)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private teamsMatch(a: string, b: string): boolean {
+    const na = this.normalizeTeamName(a);
+    const nb = this.normalizeTeamName(b);
+    if (na === nb) return true;
+    if (na.includes(nb) || nb.includes(na)) return true;
+    const tokensA = new Set(na.split(' ').filter((t) => t.length > 2));
+    const tokensB = nb.split(' ').filter((t) => t.length > 2);
+    const overlap = tokensB.filter((t) => tokensA.has(t)).length;
+    return overlap >= 2 || (tokensA.size === 1 && overlap >= 1);
+  }
+
+  private fuzzyFindResult(
+    resultMap: Map<string, { hg: number; ag: number }>,
+    homeTeam: string,
+    awayTeam: string,
+  ): { hg: number; ag: number } | undefined {
+    // 1. Exact match first
+    const exact = resultMap.get(`${homeTeam}|${awayTeam}`);
+    if (exact) return exact;
+
+    // 2. Fuzzy match
+    for (const [key, result] of resultMap) {
+      const [h, a] = key.split('|');
+      if (this.teamsMatch(homeTeam, h) && this.teamsMatch(awayTeam, a)) {
+        return result;
+      }
+    }
+    return undefined;
   }
 }
