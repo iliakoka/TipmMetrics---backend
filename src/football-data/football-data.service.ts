@@ -292,11 +292,10 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch upcoming/live fixtures for a date (used by match analyzer).
-   * Only returns NS, 1H, HT, 2H statuses.
+   * Fetch fixtures for a date (used by match analyzer).
    */
   async getFixturesForDate(dateStr: string): Promise<any[]> {
-    return (await this.rateLimitedGet('/fixtures', { date: dateStr, status: 'NS-1H-HT-2H' })) || [];
+    return (await this.rateLimitedGet('/fixtures', { date: dateStr })) || [];
   }
 
   /**

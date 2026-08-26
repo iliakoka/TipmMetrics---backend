@@ -159,7 +159,7 @@ export class OddsApiService {
       if (o.prices.length < 2) continue; // Need at least 2 bookmakers
       const avg = this.average(o.prices);
       const implied = (1 / avg) * 100;
-      if (implied >= 52 && avg >= 1.30 && avg <= 3.00) {
+      if (avg >= 1.20 && avg <= 4.50) {
         candidates.push({
           homeTeam, awayTeam, commenceTime, leagueName,
           sportKey: event.sport_key,
@@ -182,7 +182,7 @@ export class OddsApiService {
       if (o.prices.length < 2) continue;
       const avg = this.average(o.prices);
       const implied = (1 / avg) * 100;
-      if (implied >= 55 && avg >= 1.40 && avg <= 2.50) {
+      if (avg >= 1.20 && avg <= 4.50) {
         candidates.push({
           homeTeam, awayTeam, commenceTime, leagueName,
           sportKey: event.sport_key,
