@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, LessThanOrEqual } from 'typeorm';
+import { Repository, Between } from 'typeorm';
 import { Tip, TipResult } from './tip.entity';
 import { Fixture } from '../fixtures/fixture.entity';
 import { FootballDataOrgService } from '../football-data/football-data-org.service';
@@ -477,10 +477,13 @@ export class TipsService {
       });
     }
 
+    const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
+    const endOfDay   = new Date(`${dateStr}T23:59:59.999Z`);
+
     const pendingTips = await this.tipRepository.find({
       where: {
         result: TipResult.PENDING,
-        matchDate: LessThanOrEqual(new Date()),
+        matchDate: Between(startOfDay, endOfDay),
       },
       relations: ['fixture'],
     });
@@ -560,19 +563,16 @@ export class TipsService {
   }
 
   /**
-   * Get Active / Today's tips for the Tips page
+   * Get Active / Today's tips for the Tips page.
+   * NOTE: Tips are generated exclusively by the 06:00 UTC cron and onModuleInit.
+   * This method only reads from the DB — it never triggers generation or settlement.
    */
   async getTodayTips(): Promise<Tip[]> {
     const todayStr = new Date().toISOString().split('T')[0];
     const startOfToday = new Date(`${todayStr}T00:00:00.000Z`);
     const endOfToday = new Date(`${todayStr}T23:59:59.999Z`);
 
-    // Background settlement of past matches
-    this.settleDailyTips().catch((err) =>
-      this.logger.warn(`Background settlement error: ${err.message}`),
-    );
-
-    let todayTips = await this.tipRepository.find({
+    const todayTips = await this.tipRepository.find({
       where: {
         matchDate: Between(startOfToday, endOfToday),
       },
@@ -581,8 +581,7 @@ export class TipsService {
     });
 
     if (todayTips.length === 0) {
-      this.logger.log(`No tips found for ${todayStr}. Auto-generating today's daily tips...`);
-      todayTips = await this.generateDailyTips(todayStr);
+      this.logger.warn(`No tips found for ${todayStr} — generation runs at 06:00 UTC via cron.`);
     }
 
     return todayTips || [];
