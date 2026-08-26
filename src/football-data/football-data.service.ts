@@ -87,29 +87,39 @@ export class FootballDataService {
     });
   }
 
-  /**
-   * Paced API request executor to strictly stay under rate limits
-   */
-  private async rateLimitedGet(endpoint: string, params: any = {}): Promise<any> {
-    const now = Date.now();
-    const timeSinceLast = now - this.lastRequestTime;
-    const minDelay = 650; // ~9 requests/min max to prevent 429 errors
-    if (timeSinceLast < minDelay) {
-      await new Promise((resolve) => setTimeout(resolve, minDelay - timeSinceLast));
-    }
-    this.lastRequestTime = Date.now();
+  private requestQueue: Promise<any> = Promise.resolve();
 
-    try {
-      const res = await this.client.get(endpoint, { params });
-      if (res.data?.errors && (Array.isArray(res.data.errors) ? res.data.errors.length > 0 : Object.keys(res.data.errors).length > 0)) {
-        this.logger.error(`API-Football error for ${endpoint}: ${JSON.stringify(res.data.errors)}`);
+  /**
+   * Sequential queue executor to strictly stay under API-Football's 10 req/min limit.
+   */
+  private rateLimitedGet(endpoint: string, params: any = {}): Promise<any> {
+    const minDelay = 6100; // 6.1s delay = 9.8 req/min (strictly under the 10 req/min cap)
+    
+    // Chain onto the queue so requests execute one by one
+    const task = this.requestQueue.then(async () => {
+      const now = Date.now();
+      const timeSinceLast = now - this.lastRequestTime;
+      if (timeSinceLast < minDelay) {
+        await new Promise((resolve) => setTimeout(resolve, minDelay - timeSinceLast));
+      }
+      this.lastRequestTime = Date.now();
+
+      try {
+        const res = await this.client.get(endpoint, { params });
+        if (res.data?.errors && (Array.isArray(res.data.errors) ? res.data.errors.length > 0 : Object.keys(res.data.errors).length > 0)) {
+          this.logger.error(`API-Football error for ${endpoint}: ${JSON.stringify(res.data.errors)}`);
+          return null;
+        }
+        return res.data?.response || null;
+      } catch (err) {
+        this.logger.error(`API-Football call ${endpoint} failed: ${err.message}`);
         return null;
       }
-      return res.data?.response || null;
-    } catch (err) {
-      this.logger.error(`API-Football call ${endpoint} failed: ${err.message}`);
-      return null;
-    }
+    });
+
+    // Update queue pointer
+    this.requestQueue = task.catch(() => null);
+    return task;
   }
 
   /**

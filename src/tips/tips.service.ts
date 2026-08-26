@@ -91,18 +91,44 @@ export class TipsService {
     const candidates: SmartCandidate[] = [];
 
     for (const analysis of analyses) {
-      const market = analysis.predictedMarket;
-      const bookOdds = analysis.bookmakerOdds[market];
-
-      // Check if bookmaker has odds in target range for our prediction
-      if (bookOdds && bookOdds >= ODD_MIN && bookOdds <= ODD_MAX) {
+      // 1. Primary predicted market
+      const primaryMarket = analysis.predictedMarket;
+      const primaryOdds = analysis.bookmakerOdds[primaryMarket];
+      if (primaryOdds && primaryOdds >= ODD_MIN && primaryOdds <= ODD_MAX) {
         candidates.push({
           analysis,
-          market,
-          prediction: this.marketToLabel(market, analysis.homeTeam, analysis.awayTeam),
-          odds: bookOdds,
+          market: primaryMarket,
+          prediction: this.marketToLabel(primaryMarket, analysis.homeTeam, analysis.awayTeam),
+          odds: primaryOdds,
           confidence: Math.min(95, analysis.totalScore + analysis.predictedProbability * 0.3),
         });
+      }
+
+      // 2. Secondary statistically supported markets (if odds fit 1.65-2.20)
+      if (analysis.expectedTotalGoals >= 2.65 && analysis.bookmakerOdds['OVER_2_5']) {
+        const oOdds = analysis.bookmakerOdds['OVER_2_5'];
+        if (oOdds >= ODD_MIN && oOdds <= ODD_MAX && primaryMarket !== 'OVER_2_5') {
+          candidates.push({
+            analysis,
+            market: 'OVER_2_5',
+            prediction: 'Over 2.5 Goals',
+            odds: oOdds,
+            confidence: Math.min(90, analysis.totalScore * 0.85 + (analysis.expectedTotalGoals / 3) * 20),
+          });
+        }
+      }
+
+      if (analysis.expectedTotalGoals <= 2.20 && analysis.bookmakerOdds['UNDER_2_5']) {
+        const uOdds = analysis.bookmakerOdds['UNDER_2_5'];
+        if (uOdds >= ODD_MIN && uOdds <= ODD_MAX && primaryMarket !== 'UNDER_2_5') {
+          candidates.push({
+            analysis,
+            market: 'UNDER_2_5',
+            prediction: 'Under 2.5 Goals',
+            odds: uOdds,
+            confidence: Math.min(90, analysis.totalScore * 0.85 + ((3 - analysis.expectedTotalGoals) / 3) * 20),
+          });
+        }
       }
     }
 
@@ -111,21 +137,31 @@ export class TipsService {
       return [];
     }
 
-    // Sort by confidence, max 2 per market
+    // Sort by confidence descending, pick 1 best tip per match, max 2 per market
     candidates.sort((a, b) => b.confidence - a.confidence);
     const selected: SmartCandidate[] = [];
     const marketCounts: Record<string, number> = {};
+    const usedMatches = new Set<string>();
 
     for (const c of candidates) {
+      const matchKey = `${c.analysis.homeTeam}|${c.analysis.awayTeam}`;
+      if (usedMatches.has(matchKey)) continue; // 1 tip per match
       const mc = marketCounts[c.market] ?? 0;
-      if (mc >= 2) continue;
+      if (mc >= 2 && selected.length < 5) {
+        // allow up to 3 per market if needed to reach 5 tips
+        if (mc >= 3) continue;
+      } else if (mc >= 2) {
+        continue;
+      }
+
       selected.push(c);
-      marketCounts[c.market] = mc + 1;
+      usedMatches.add(matchKey);
+      marketCounts[c.market] = (marketCounts[c.market] ?? 0) + 1;
       if (selected.length >= 7) break;
     }
 
     if (selected.length < 5) {
-      this.logger.warn(`Only ${selected.length} smart tips aligned with 1.65-2.20 odds`);
+      this.logger.warn(`Generated ${selected.length} smart tips aligned with 1.65-2.20 odds for ${dateStr}`);
     }
 
     const savedTips: Tip[] = [];
