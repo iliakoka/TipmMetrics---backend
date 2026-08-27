@@ -178,6 +178,66 @@ export class FootballDataService {
   }
 
   /**
+   * Parse raw API-Football odds response item into a clean key-value map:
+   * { HOME_WIN: 1.25, AWAY_WIN: 9.00, DRAW: 5.50, OVER_2_5: 1.48, UNDER_2_5: 2.55, BTTS_YES: 1.90, BTTS_NO: 1.80 }
+   */
+  private parseOddsItem(item: any): Record<string, number> {
+    const odds: Record<string, number> = {};
+    if (!item?.bookmakers?.length) return odds;
+
+    // Search across bookmakers (prefer Bet365 id 8, 1xBet id 11, Bwin id 6, Unibet id 13)
+    const bookmaker =
+      item.bookmakers.find((b: any) => b.id === 8 || b.id === 11 || b.id === 6 || b.id === 13) ||
+      item.bookmakers[0];
+
+    if (!bookmaker?.bets) return odds;
+
+    for (const bet of bookmaker.bets) {
+      const betName = (bet.name || '').toLowerCase();
+      const betId = bet.id;
+
+      // 1. Match Winner (1X2)
+      if (betId === 1 || betName.includes('match winner')) {
+        for (const val of bet.values || []) {
+          const v = (val.value || '').toString().toLowerCase();
+          const oddNum = parseFloat(val.odd);
+          if (!isNaN(oddNum)) {
+            if (v === 'home') odds['HOME_WIN'] = Math.round(oddNum * 100) / 100;
+            else if (v === 'away') odds['AWAY_WIN'] = Math.round(oddNum * 100) / 100;
+            else if (v === 'draw') odds['DRAW'] = Math.round(oddNum * 100) / 100;
+          }
+        }
+      }
+
+      // 2. Goals Over/Under 2.5
+      if (betId === 5 || betName.includes('goals over/under') || betName.includes('over/under')) {
+        for (const val of bet.values || []) {
+          const v = (val.value || '').toString().toLowerCase();
+          const oddNum = parseFloat(val.odd);
+          if (!isNaN(oddNum)) {
+            if (v === 'over 2.5') odds['OVER_2_5'] = Math.round(oddNum * 100) / 100;
+            else if (v === 'under 2.5') odds['UNDER_2_5'] = Math.round(oddNum * 100) / 100;
+          }
+        }
+      }
+
+      // 3. Both Teams Score
+      if (betId === 8 || betName.includes('both teams score') || betName.includes('both teams to score')) {
+        for (const val of bet.values || []) {
+          const v = (val.value || '').toString().toLowerCase();
+          const oddNum = parseFloat(val.odd);
+          if (!isNaN(oddNum)) {
+            if (v === 'yes') odds['BTTS_YES'] = Math.round(oddNum * 100) / 100;
+            else if (v === 'no') odds['BTTS_NO'] = Math.round(oddNum * 100) / 100;
+          }
+        }
+      }
+    }
+
+    return odds;
+  }
+
+  /**
    * Fetch all pre-match odds for a given date in 1 single API call.
    * Returns a Map of apiFixtureId -> { HOME_WIN, AWAY_WIN, DRAW, OVER_2_5, UNDER_2_5, BTTS_YES, BTTS_NO }
    */
@@ -188,60 +248,10 @@ export class FootballDataService {
       if (Array.isArray(data)) {
         for (const item of data) {
           const fixtureId = item.fixture?.id;
-          if (!fixtureId || !item.bookmakers?.length) continue;
-
-          // Pick primary bookmaker (Bet365 id 8, 1xBet id 11, Bwin id 6, or first available)
-          const bookmaker =
-            item.bookmakers.find((b: any) => b.id === 8 || b.id === 11 || b.id === 6) ||
-            item.bookmakers[0];
-
-          if (!bookmaker?.bets) continue;
-
-          const odds: Record<string, number> = {};
-          for (const bet of bookmaker.bets) {
-            const betName = (bet.name || '').toLowerCase();
-            const betId = bet.id;
-
-            // 1. Match Winner (1X2)
-            if (betId === 1 || betName.includes('match winner')) {
-              for (const val of bet.values || []) {
-                const v = (val.value || '').toString().toLowerCase();
-                const oddNum = parseFloat(val.odd);
-                if (!isNaN(oddNum)) {
-                  if (v === 'home') odds['HOME_WIN'] = Math.round(oddNum * 100) / 100;
-                  else if (v === 'away') odds['AWAY_WIN'] = Math.round(oddNum * 100) / 100;
-                  else if (v === 'draw') odds['DRAW'] = Math.round(oddNum * 100) / 100;
-                }
-              }
-            }
-
-            // 2. Goals Over/Under 2.5
-            if (betId === 5 || betName.includes('goals over/under') || betName.includes('over/under')) {
-              for (const val of bet.values || []) {
-                const v = (val.value || '').toString().toLowerCase();
-                const oddNum = parseFloat(val.odd);
-                if (!isNaN(oddNum)) {
-                  if (v === 'over 2.5') odds['OVER_2_5'] = Math.round(oddNum * 100) / 100;
-                  else if (v === 'under 2.5') odds['UNDER_2_5'] = Math.round(oddNum * 100) / 100;
-                }
-              }
-            }
-
-            // 3. Both Teams Score
-            if (betId === 8 || betName.includes('both teams score') || betName.includes('both teams to score')) {
-              for (const val of bet.values || []) {
-                const v = (val.value || '').toString().toLowerCase();
-                const oddNum = parseFloat(val.odd);
-                if (!isNaN(oddNum)) {
-                  if (v === 'yes') odds['BTTS_YES'] = Math.round(oddNum * 100) / 100;
-                  else if (v === 'no') odds['BTTS_NO'] = Math.round(oddNum * 100) / 100;
-                }
-              }
-            }
-          }
-
-          if (Object.keys(odds).length > 0) {
-            oddsMap.set(fixtureId, odds);
+          if (!fixtureId) continue;
+          const parsed = this.parseOddsItem(item);
+          if (Object.keys(parsed).length > 0) {
+            oddsMap.set(fixtureId, parsed);
           }
         }
       }
@@ -253,18 +263,20 @@ export class FootballDataService {
   }
 
   /**
-   * Fetch bookmaker pre-match odds for a specific fixture (with in-memory cache)
+   * Fetch real bookmaker pre-match odds for a specific fixture (with in-memory cache)
    */
-  async getOddsForFixture(apiFixtureId: number): Promise<any | null> {
+  async getOddsForFixture(apiFixtureId: number): Promise<Record<string, number>> {
     if (this.oddsCache.has(apiFixtureId)) {
       return this.oddsCache.get(apiFixtureId);
     }
 
-    const oddsData = (await this.rateLimitedGet('/odds', { fixture: apiFixtureId }))?.[0] || null;
-    if (oddsData) {
-      this.oddsCache.set(apiFixtureId, oddsData);
+    const data = await this.rateLimitedGet('/odds', { fixture: apiFixtureId });
+    const item = Array.isArray(data) ? data[0] : null;
+    const parsed = this.parseOddsItem(item);
+    if (Object.keys(parsed).length > 0) {
+      this.oddsCache.set(apiFixtureId, parsed);
     }
-    return oddsData;
+    return parsed;
   }
 
   /**

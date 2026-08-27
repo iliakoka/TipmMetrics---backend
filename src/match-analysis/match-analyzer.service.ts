@@ -248,19 +248,24 @@ export class MatchAnalyzerService {
       homeAdvantageScore + goalsProfileScore + weatherPenalty
     ));
 
+    // Build odds map: try API-Football direct real odds first, then per-fixture lookup, then The Odds API fallback
+    const apiFixtureId = fixture.fixture?.id || fixture.apiFixtureId || fixture.id;
+    let bookmakerOdds = (apiFixtureId && apiOddsMap.get(apiFixtureId)) || {};
+
+    if (Object.keys(bookmakerOdds).length === 0 && apiFixtureId) {
+      bookmakerOdds = await this.footballDataService.getOddsForFixture(apiFixtureId);
+    }
+
+    if (Object.keys(bookmakerOdds).length === 0) {
+      bookmakerOdds = this.findOdds(oddsMap, homeTeam, awayTeam);
+    }
+
     // Determine best predicted market + probability
     const prediction = this.makePrediction({
       formScore, h2hStats, homeFormPts, awayFormPts,
       homePos, awayPos, expectedTotal, homeMotivation, awayMotivation,
-      homeWinPct, awayWinPct, weather,
+      homeWinPct, awayWinPct, weather, bookmakerOdds,
     });
-
-    // Build odds map: try API-Football direct real odds first, then The Odds API fallback
-    const apiFixtureId = fixture.fixture?.id || fixture.apiFixtureId || fixture.id;
-    let bookmakerOdds = apiOddsMap.get(apiFixtureId) || {};
-    if (Object.keys(bookmakerOdds).length === 0) {
-      bookmakerOdds = this.findOdds(oddsMap, homeTeam, awayTeam);
-    }
 
     const reasoning = this.buildReasoning({
       homeTeam, awayTeam, homeFormPts, awayFormPts,
@@ -406,27 +411,29 @@ export class MatchAnalyzerService {
     homeWinPct: number;
     awayWinPct: number;
     weather: any;
+    bookmakerOdds?: Record<string, number>;
   }): { market: string; probability: number; odds: number } {
     const {
       homeFormPts, awayFormPts, homePos, awayPos,
-      expectedTotal, homeWinPct, awayWinPct,
+      expectedTotal, homeWinPct, awayWinPct, bookmakerOdds = {},
     } = data;
 
     // Home win signals
     const homeStrong =
-      homeFormPts > awayFormPts + 3 &&
-      homePos < awayPos &&
-      homeWinPct > 50;
+      (homeFormPts > awayFormPts + 3 && homePos < awayPos && homeWinPct > 50) ||
+      (bookmakerOdds['HOME_WIN'] && bookmakerOdds['HOME_WIN'] <= 1.45);
 
     // Away win signals
     const awayStrong =
-      awayFormPts > homeFormPts + 3 &&
-      awayPos < homePos &&
-      awayWinPct > 35;
+      (awayFormPts > homeFormPts + 3 && awayPos < homePos && awayWinPct > 35) ||
+      (bookmakerOdds['AWAY_WIN'] && bookmakerOdds['AWAY_WIN'] <= 1.55);
 
-    // Goals signals
-    const likelyOver = expectedTotal > 2.8;
-    const likelyUnder = expectedTotal < 2.2;
+    // Goals signals (verify against real bookmaker odds so we don't bet on high-priced underdogs as low-goal games)
+    const bookmakerFavorsOver = bookmakerOdds['OVER_2_5'] && bookmakerOdds['OVER_2_5'] <= 1.65;
+    const bookmakerFavorsUnder = bookmakerOdds['UNDER_2_5'] && bookmakerOdds['UNDER_2_5'] <= 1.70;
+
+    const likelyOver = expectedTotal > 2.75 || bookmakerFavorsOver;
+    const likelyUnder = expectedTotal < 2.20 && !bookmakerFavorsOver && (bookmakerFavorsUnder || !bookmakerOdds['UNDER_2_5']);
 
     if (homeStrong) {
       const prob = Math.min(75, 52 + (homeFormPts - awayFormPts) * 2 + (homeWinPct - 50) * 0.5);
@@ -436,11 +443,11 @@ export class MatchAnalyzerService {
       const prob = Math.min(72, 50 + (awayFormPts - homeFormPts) * 2 + awayWinPct * 0.3);
       return { market: 'AWAY_WIN', probability: Math.round(prob), odds: 0 };
     }
+    if (likelyOver) {
+      return { market: 'OVER_2_5', probability: 64, odds: 0 };
+    }
     if (likelyUnder) {
       return { market: 'UNDER_2_5', probability: 62, odds: 0 };
-    }
-    if (likelyOver) {
-      return { market: 'OVER_2_5', probability: 60, odds: 0 };
     }
 
     // Default: home win with average confidence
