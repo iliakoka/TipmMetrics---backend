@@ -120,7 +120,11 @@ export class MatchAnalyzerService {
     this.logger.log(`${targetFixtures.length} fixtures in target leagues`);
     if (!targetFixtures.length) return [];
 
-    // Step 2: Get bookmaker odds from The Odds API
+    // Step 2: Get live bookmaker odds
+    // 2a. Fetch real bookmaker odds for all fixtures from API-Football (1 single request for the entire date)
+    const apiOddsMap = await this.footballDataService.getOddsForDate(dateStr);
+
+    // 2b. Fetch Odds API events (major leagues)
     const oddsEvents = await this.oddsApiService.getCandidatesForDate(dateStr);
     // Build a map: "HomeTeam|AwayTeam" -> { market -> odds }
     const oddsMap = new Map<string, Record<string, number>>();
@@ -136,7 +140,7 @@ export class MatchAnalyzerService {
 
     for (const fixture of toAnalyze) {
       try {
-        const analysis = await this.analyzeOneMatch(fixture, oddsMap, dateStr);
+        const analysis = await this.analyzeOneMatch(fixture, oddsMap, apiOddsMap, dateStr);
         if (analysis) results.push(analysis);
       } catch (err) {
         this.logger.error(`Error analyzing ${fixture.teams?.home?.name} vs ${fixture.teams?.away?.name}: ${err.message}`);
@@ -152,6 +156,7 @@ export class MatchAnalyzerService {
   private async analyzeOneMatch(
     fixture: any,
     oddsMap: Map<string, Record<string, number>>,
+    apiOddsMap: Map<number, Record<string, number>>,
     dateStr: string,
   ): Promise<MatchAnalysis | null> {
     const homeTeamId   = fixture.teams?.home?.id;
@@ -250,8 +255,12 @@ export class MatchAnalyzerService {
       homeWinPct, awayWinPct, weather,
     });
 
-    // Build odds map for this match using fuzzy name matching
-    const bookmakerOdds = this.findOdds(oddsMap, homeTeam, awayTeam);
+    // Build odds map: try API-Football direct real odds first, then The Odds API fallback
+    const apiFixtureId = fixture.fixture?.id || fixture.apiFixtureId || fixture.id;
+    let bookmakerOdds = apiOddsMap.get(apiFixtureId) || {};
+    if (Object.keys(bookmakerOdds).length === 0) {
+      bookmakerOdds = this.findOdds(oddsMap, homeTeam, awayTeam);
+    }
 
     const reasoning = this.buildReasoning({
       homeTeam, awayTeam, homeFormPts, awayFormPts,
