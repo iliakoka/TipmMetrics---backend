@@ -1,37 +1,12 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { TipsService } from '../tips/tips.service';
 
 @Injectable()
-export class SchedulerService implements OnModuleInit {
+export class SchedulerService {
   private readonly logger = new Logger(SchedulerService.name);
 
   constructor(private readonly tipsService: TipsService) {}
-
-  /**
-   * On startup — generate today's tips if we're past 06:00 UTC (i.e. the cron has fired).
-   * Before 06:00 UTC we skip: the 06:00 cron will handle generation.
-   * Uses setImmediate so Railway's health check passes instantly.
-   */
-  onModuleInit() {
-    setImmediate(async () => {
-      const nowUtcHour = new Date().getUTCHours();
-      if (nowUtcHour < 6) {
-        this.logger.log(
-          `[Startup] UTC hour is ${nowUtcHour} (before 06:00) — skipping startup generation; cron will handle it.`,
-        );
-        return;
-      }
-
-      this.logger.log('[Startup] Triggering today\'s tip generation in background...');
-      try {
-        const tips = await this.tipsService.generateDailyTips();
-        this.logger.log(`[Startup] ${tips.length} tips ready for today.`);
-      } catch (err) {
-        this.logger.error(`[Startup] Tip generation failed: ${err.message}`);
-      }
-    });
-  }
 
   /**
    * STEP 1 — Every day at 05:55 AM UTC

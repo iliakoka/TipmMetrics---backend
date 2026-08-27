@@ -41,16 +41,13 @@ export const TARGET_LEAGUES = [
   { id: 207, name: 'Super League', country: 'Switzerland' },
 ];
 
-const DOMESTIC_LEAGUE_MAP: Record<number, number[]> = {
-  48: [39, 40], // EFL Cup -> Premier League, Championship
-  45: [39, 40], // FA Cup -> Premier League, Championship
-  143: [140],   // Copa del Rey -> La Liga
-  137: [135],   // Coppa Italia -> Serie A
-  81: [78],     // DFB Pokal -> Bundesliga
-  66: [61],     // Coupe de France -> Ligue 1
-  2: [39, 140, 135, 78, 61, 88, 94, 179, 103], // Champions League
-  3: [39, 140, 135, 78, 61, 88, 94, 179, 103], // Europa League
-  848: [39, 140, 135, 78, 61, 88, 94, 179, 103], // Conference League
+const DOMESTIC_LEAGUE_MAP: Record<number, number> = {
+  48: 39,   // EFL Cup -> Premier League
+  45: 39,   // FA Cup -> Premier League
+  143: 140, // Copa del Rey -> La Liga
+  137: 135, // Coppa Italia -> Serie A
+  81: 78,   // DFB Pokal -> Bundesliga
+  66: 61,   // Coupe de France -> Ligue 1
 };
 
 @Injectable()
@@ -91,9 +88,10 @@ export class FootballDataService {
 
   /**
    * Sequential queue executor to strictly stay under API-Football's 10 req/min limit.
+   * 6500ms delay guarantees max ~9.2 requests per minute (safely below the 10 req/min hard limit).
    */
   private rateLimitedGet(endpoint: string, params: any = {}): Promise<any> {
-    const minDelay = 1500; // 1.5s gap between requests (fast and safe)
+    const minDelay = 6500; // 6.5s gap between requests (safely complies with 10 req/min)
     
     // Chain onto the queue so requests execute one by one
     const task = this.requestQueue.then(async () => {
@@ -214,8 +212,10 @@ export class FootballDataService {
   async getTeamStats(
     teamId: number,
     leagueId: number,
+    season?: number,
   ): Promise<any | null> {
-    const cacheKey = `${teamId}-${leagueId}`;
+    const targetSeason = season || new Date().getFullYear();
+    const cacheKey = `${teamId}-${leagueId}-${targetSeason}`;
     if (this.statsCache.has(cacheKey)) {
       return this.statsCache.get(cacheKey);
     }
@@ -250,14 +250,17 @@ export class FootballDataService {
       return formatted;
     }
 
-    // 2. If not in PostgreSQL, query API-Sports across primary league
-    const leaguesToCheck = DOMESTIC_LEAGUE_MAP[leagueId] ? [...DOMESTIC_LEAGUE_MAP[leagueId], leagueId] : [leagueId];
+    // 2. If not in PostgreSQL, query API-Sports for this league (max 1 or 2 requests)
+    const leaguesToCheck: number[] = [leagueId];
+    if (DOMESTIC_LEAGUE_MAP[leagueId] && DOMESTIC_LEAGUE_MAP[leagueId] !== leagueId) {
+      leaguesToCheck.push(DOMESTIC_LEAGUE_MAP[leagueId]);
+    }
 
     for (const lId of leaguesToCheck) {
       const data = await this.rateLimitedGet('/teams/statistics', {
         team: teamId,
         league: lId,
-        season: 2024,
+        season: targetSeason,
       });
 
       const avgScored = parseFloat(data?.goals?.for?.average?.total || '0');
@@ -267,7 +270,7 @@ export class FootballDataService {
           const newStat = this.teamStatRepository.create({
             teamId,
             leagueId: lId,
-            season: 2024,
+            season: targetSeason,
             goalsForHome: parseFloat(data.goals?.for?.average?.home || '1.3'),
             goalsForAway: parseFloat(data.goals?.for?.average?.away || '1.1'),
             goalsForTotal: avgScored,
@@ -307,15 +310,15 @@ export class FootballDataService {
     }
 
     // Default neutral stats if not available
-    return {
+    const defaultStats = {
       goals: {
         for: { average: { home: '1.3', away: '1.1', total: '1.2' } },
         against: { average: { home: '1.0', away: '1.3', total: '1.2' } },
       },
       form: 'WDLW',
     };
-
-    return null;
+    this.statsCache.set(cacheKey, defaultStats);
+    return defaultStats;
   }
 
   /**

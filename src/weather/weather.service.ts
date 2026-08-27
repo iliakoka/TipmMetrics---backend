@@ -37,8 +37,16 @@ const CITY_COORDS: Record<string, { lat: number; lon: number }> = {
   'sao paulo':   { lat: -23.55, lon: -46.63 },
   'rio de janeiro': { lat: -22.91, lon: -43.17 },
   'mexico city': { lat: 19.43, lon: -99.13 },
-  'new york':    { lat: 40.71, lon: -74.01 },
   'los angeles': { lat: 34.05, lon: -118.24 },
+  'salzburg':    { lat: 47.80, lon: 13.04 },
+  'vienna':      { lat: 48.20, lon: 16.37 },
+  'graz':        { lat: 47.07, lon: 15.43 },
+  'aarhus':      { lat: 56.16, lon: 10.20 },
+  'prague':      { lat: 50.07, lon: 14.43 },
+  'bern':        { lat: 46.94, lon: 7.44 },
+  'basel':       { lat: 47.55, lon: 7.58 },
+  'athens':      { lat: 37.98, lon: 23.72 },
+  'zagreb':      { lat: 45.81, lon: 15.98 },
 };
 
 @Injectable()

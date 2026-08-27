@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { FootballDataService } from '../football-data/football-data.service';
+import { FootballDataService, TARGET_LEAGUES } from '../football-data/football-data.service';
 import { WeatherService } from '../weather/weather.service';
 import { OddsApiService } from '../odds/odds-api.service';
 
@@ -76,22 +76,6 @@ export interface MatchAnalysis {
   bookmakerOdds: Record<string, number>; // market -> consensus odds
 }
 
-// Target leagues for deep analysis (API-Football IDs)
-const ANALYSIS_LEAGUES = [
-  { id: 39,  name: 'Premier League',       season: 2025 },
-  { id: 140, name: 'La Liga',              season: 2025 },
-  { id: 135, name: 'Serie A',              season: 2025 },
-  { id: 78,  name: 'Bundesliga',           season: 2025 },
-  { id: 61,  name: 'Ligue 1',             season: 2025 },
-  { id: 2,   name: 'Champions League',     season: 2025 },
-  { id: 3,   name: 'Europa League',        season: 2025 },
-  { id: 88,  name: 'Eredivisie',           season: 2025 },
-  { id: 94,  name: 'Primeira Liga',        season: 2025 },
-  { id: 203, name: 'Süper Lig',            season: 2025 },
-  { id: 48,  name: 'EFL Cup',             season: 2025 },
-  { id: 40,  name: 'Championship',         season: 2025 },
-];
-
 @Injectable()
 export class MatchAnalyzerService {
   private readonly logger = new Logger(MatchAnalyzerService.name);
@@ -110,7 +94,7 @@ export class MatchAnalyzerService {
    * 1. Fetch today's fixtures from API-Football (1 req)
    * 2. Fetch Odds API events to get bookmaker odds
    * 3. Pre-load standings for relevant leagues (3-5 req)
-   * 4. Deep-analyze top candidates (2 req each: team stats + H2H)
+   * 4. Deep-analyze top candidates (team stats + H2H)
    * 5. Return ranked MatchAnalysis[] for TipsService to select from
    */
   async analyzeMatchesForDate(dateStr: string): Promise<MatchAnalysis[]> {
@@ -124,11 +108,16 @@ export class MatchAnalyzerService {
     }
     this.logger.log(`Found ${rawFixtures.length} raw fixtures`);
 
-    // Filter to target leagues only
-    const targetLeagueIds = new Set(ANALYSIS_LEAGUES.map((l) => l.id));
-    const targetFixtures = rawFixtures.filter((f) => targetLeagueIds.has(f.league?.id));
-    this.logger.log(`${targetFixtures.length} fixtures in target leagues`);
+    // Filter to target leagues (all 30 supported leagues)
+    const targetLeagueIds = new Set(TARGET_LEAGUES.map((l) => l.id));
+    let targetFixtures = rawFixtures.filter((f) => targetLeagueIds.has(f.league?.id));
+    
+    // If no target league matches, fall back to any available fixtures with valid teams
+    if (!targetFixtures.length && rawFixtures.length > 0) {
+      targetFixtures = rawFixtures.filter((f) => f.teams?.home?.name && f.teams?.away?.name);
+    }
 
+    this.logger.log(`${targetFixtures.length} fixtures in target leagues`);
     if (!targetFixtures.length) return [];
 
     // Step 2: Get bookmaker odds from The Odds API
@@ -141,7 +130,7 @@ export class MatchAnalyzerService {
       oddsMap.get(key)![c.market] = c.consensusOdds;
     }
 
-    // Step 3: Analyze top 8 fixtures (fast execution with DB cache)
+    // Step 3: Analyze top 8 fixtures (lean request usage + DB cache)
     const results: MatchAnalysis[] = [];
     const toAnalyze = targetFixtures.slice(0, 8);
 
@@ -175,12 +164,12 @@ export class MatchAnalyzerService {
     const leagueName  = fixture.league?.name || '';
     const kickoffTime = new Date(fixture.fixture?.date);
     const venueCity   = fixture.fixture?.venue?.city || '';
-    const season      = fixture.league?.season || 2025;
+    const season      = fixture.league?.season || new Date().getFullYear();
 
-    // Get team season stats (2 API-Football requests)
+    // Get team season stats (with DB cache)
     const [homeStats, awayStats] = await Promise.all([
-      this.footballDataService.getTeamStats(homeTeamId, leagueId),
-      this.footballDataService.getTeamStats(awayTeamId, leagueId),
+      this.footballDataService.getTeamStats(homeTeamId, leagueId, season),
+      this.footballDataService.getTeamStats(awayTeamId, leagueId, season),
     ]);
 
     // Get H2H (1 API-Football request)

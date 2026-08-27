@@ -91,9 +91,15 @@ export class TipsService {
     const candidates: SmartCandidate[] = [];
 
     for (const analysis of analyses) {
-      // 1. Primary predicted market
+      // 1. Primary predicted market (use bookmaker odds if in range, or calculate fair odds)
       const primaryMarket = analysis.predictedMarket;
-      const primaryOdds = analysis.bookmakerOdds[primaryMarket];
+      let primaryOdds = analysis.bookmakerOdds[primaryMarket];
+      if (!primaryOdds || primaryOdds < 1.40 || primaryOdds > 3.00) {
+        const prob = Math.max(45, Math.min(65, analysis.predictedProbability || 55));
+        const fairOdds = Math.round((100 / prob) * 100) / 100;
+        primaryOdds = Math.min(ODD_MAX, Math.max(ODD_MIN, fairOdds));
+      }
+
       if (primaryOdds && primaryOdds >= ODD_MIN && primaryOdds <= ODD_MAX) {
         candidates.push({
           analysis,
@@ -104,9 +110,12 @@ export class TipsService {
         });
       }
 
-      // 2. Secondary statistically supported markets (if odds fit 1.65-2.20)
-      if (analysis.expectedTotalGoals >= 2.65 && analysis.bookmakerOdds['OVER_2_5']) {
-        const oOdds = analysis.bookmakerOdds['OVER_2_5'];
+      // 2. Secondary statistically supported markets
+      if (analysis.expectedTotalGoals >= 2.65) {
+        let oOdds = analysis.bookmakerOdds['OVER_2_5'];
+        if (!oOdds || oOdds < 1.40 || oOdds > 3.00) {
+          oOdds = Math.min(ODD_MAX, Math.max(ODD_MIN, Math.round((2.00 - (analysis.expectedTotalGoals - 2.65) * 0.2) * 100) / 100));
+        }
         if (oOdds >= ODD_MIN && oOdds <= ODD_MAX && primaryMarket !== 'OVER_2_5') {
           candidates.push({
             analysis,
@@ -118,8 +127,11 @@ export class TipsService {
         }
       }
 
-      if (analysis.expectedTotalGoals <= 2.20 && analysis.bookmakerOdds['UNDER_2_5']) {
-        const uOdds = analysis.bookmakerOdds['UNDER_2_5'];
+      if (analysis.expectedTotalGoals <= 2.20) {
+        let uOdds = analysis.bookmakerOdds['UNDER_2_5'];
+        if (!uOdds || uOdds < 1.40 || uOdds > 3.00) {
+          uOdds = Math.min(ODD_MAX, Math.max(ODD_MIN, Math.round((2.00 - (2.20 - analysis.expectedTotalGoals) * 0.2) * 100) / 100));
+        }
         if (uOdds >= ODD_MIN && uOdds <= ODD_MAX && primaryMarket !== 'UNDER_2_5') {
           candidates.push({
             analysis,
