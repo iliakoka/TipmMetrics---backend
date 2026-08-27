@@ -409,7 +409,7 @@ export class TipsService {
   }
 
   /**
-   * Get Aggregated Analytics & ROI Performance Stats
+   * Get Aggregated Analytics & ROI Performance Stats (exclusively based on settled tips)
    */
   async getStats(): Promise<{
     totalTips: number;
@@ -429,16 +429,21 @@ export class TipsService {
     const lostTips = allTips.filter((t) => t.result === TipResult.LOST).length;
     const voidTips = allTips.filter((t) => t.result === TipResult.VOID).length;
     const pendingTips = allTips.filter((t) => t.result === TipResult.PENDING).length;
-    const settledTips = wonTips + lostTips;
+    
+    // Only include settled tips (WON, LOST, VOID) in total tips count and performance analytics
+    const settledTipsList = allTips.filter(
+      (t) => t.result === TipResult.WON || t.result === TipResult.LOST || t.result === TipResult.VOID,
+    );
+    const settledCount = wonTips + lostTips;
 
     const winRate =
-      settledTips > 0 ? Number(((wonTips / settledTips) * 100).toFixed(1)) : 0;
+      settledCount > 0 ? Number(((wonTips / settledCount) * 100).toFixed(1)) : 0;
 
     let totalOdds = 0;
     let oddsCount = 0;
     let totalProfitUnits = 0;
 
-    for (const tip of allTips) {
+    for (const tip of settledTipsList) {
       if (tip.odds) {
         totalOdds += Number(tip.odds);
         oddsCount++;
@@ -454,12 +459,12 @@ export class TipsService {
       oddsCount > 0 ? Number((totalOdds / oddsCount).toFixed(2)) : 0;
 
     const roiPercentage =
-      settledTips > 0
-        ? Number(((totalProfitUnits / settledTips) * 100).toFixed(1))
+      settledCount > 0
+        ? Number(((totalProfitUnits / settledCount) * 100).toFixed(1))
         : 0;
 
     return {
-      totalTips: allTips.length,
+      totalTips: settledTipsList.length,
       wonTips,
       lostTips,
       voidTips,
