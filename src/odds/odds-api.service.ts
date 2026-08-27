@@ -16,20 +16,32 @@ export interface OddsCandidate {
   bookmakerCount: number;
 }
 
-// Soccer sport keys covered on The Odds API free tier
+// Soccer sport keys covered on The Odds API
 const SOCCER_SPORT_KEYS = [
-  { key: 'soccer_epl',                       name: 'Premier League' },
-  { key: 'soccer_spain_la_liga',             name: 'La Liga' },
-  { key: 'soccer_germany_bundesliga',        name: 'Bundesliga' },
-  { key: 'soccer_italy_serie_a',             name: 'Serie A' },
-  { key: 'soccer_france_ligue_one',          name: 'Ligue 1' },
-  { key: 'soccer_uefa_champs_league',        name: 'UEFA Champions League' },
-  { key: 'soccer_uefa_europa_league',        name: 'UEFA Europa League' },
-  { key: 'soccer_england_efl_cup',           name: 'EFL Cup' },
-  { key: 'soccer_efl_champ',                 name: 'EFL Championship' },
-  { key: 'soccer_netherlands_eredivisie',    name: 'Eredivisie' },
-  { key: 'soccer_portugal_primeira_liga',    name: 'Primeira Liga' },
-  { key: 'soccer_turkey_super_league',       name: 'Süper Lig' },
+  { key: 'soccer_epl',                            name: 'Premier League' },
+  { key: 'soccer_spain_la_liga',                  name: 'La Liga' },
+  { key: 'soccer_germany_bundesliga',             name: 'Bundesliga' },
+  { key: 'soccer_italy_serie_a',                   name: 'Serie A' },
+  { key: 'soccer_france_ligue_one',               name: 'Ligue 1' },
+  { key: 'soccer_uefa_champs_league',             name: 'UEFA Champions League' },
+  { key: 'soccer_uefa_europa_league',             name: 'UEFA Europa League' },
+  { key: 'soccer_uefa_europa_conference_league',  name: 'UEFA Europa Conference League' },
+  { key: 'soccer_england_efl_cup',                name: 'EFL Cup' },
+  { key: 'soccer_efl_champ',                      name: 'EFL Championship' },
+  { key: 'soccer_netherlands_eredivisie',         name: 'Eredivisie' },
+  { key: 'soccer_portugal_primeira_liga',         name: 'Primeira Liga' },
+  { key: 'soccer_turkey_super_league',            name: 'Süper Lig' },
+  { key: 'soccer_belgium_first_div',              name: 'Jupiler Pro League' },
+  { key: 'soccer_spl',                            name: 'Scottish Premiership' },
+  { key: 'soccer_denmark_superliga',              name: 'Superliga' },
+  { key: 'soccer_sweden_allsvenskan',             name: 'Allsvenskan' },
+  { key: 'soccer_norway_eliteserien',             name: 'Eliteserien' },
+  { key: 'soccer_switzerland_superleague',        name: 'Super League' },
+  { key: 'soccer_austria_bundesliga',             name: 'Austrian Bundesliga' },
+  { key: 'soccer_brazil_campeonato',              name: 'Serie A Brazil' },
+  { key: 'soccer_argentina_primera_division',     name: 'Liga Profesional' },
+  { key: 'soccer_mexico_ligamx',                  name: 'Liga MX' },
+  { key: 'soccer_usa_mls',                        name: 'Major League Soccer' },
 ];
 
 @Injectable()

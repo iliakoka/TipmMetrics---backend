@@ -91,16 +91,10 @@ export class TipsService {
     const candidates: SmartCandidate[] = [];
 
     for (const analysis of analyses) {
-      // 1. Primary predicted market (use bookmaker odds if in range, or calculate fair odds)
+      // 1. Primary predicted market with real live bookmaker odds
       const primaryMarket = analysis.predictedMarket;
-      let primaryOdds = analysis.bookmakerOdds[primaryMarket];
-      if (!primaryOdds || primaryOdds < 1.40 || primaryOdds > 3.00) {
-        const prob = Math.max(45, Math.min(65, analysis.predictedProbability || 55));
-        const fairOdds = Math.round((100 / prob) * 100) / 100;
-        primaryOdds = Math.min(ODD_MAX, Math.max(ODD_MIN, fairOdds));
-      }
-
-      if (primaryOdds && primaryOdds >= ODD_MIN && primaryOdds <= ODD_MAX) {
+      const primaryOdds = analysis.bookmakerOdds[primaryMarket];
+      if (primaryOdds && primaryOdds >= 1.40 && primaryOdds <= 3.50) {
         candidates.push({
           analysis,
           market: primaryMarket,
@@ -110,13 +104,10 @@ export class TipsService {
         });
       }
 
-      // 2. Secondary statistically supported markets
-      if (analysis.expectedTotalGoals >= 2.65) {
-        let oOdds = analysis.bookmakerOdds['OVER_2_5'];
-        if (!oOdds || oOdds < 1.40 || oOdds > 3.00) {
-          oOdds = Math.min(ODD_MAX, Math.max(ODD_MIN, Math.round((2.00 - (analysis.expectedTotalGoals - 2.65) * 0.2) * 100) / 100));
-        }
-        if (oOdds >= ODD_MIN && oOdds <= ODD_MAX && primaryMarket !== 'OVER_2_5') {
+      // 2. Secondary statistically supported Over/Under markets with real bookmaker odds
+      if (analysis.expectedTotalGoals >= 2.60 && analysis.bookmakerOdds['OVER_2_5']) {
+        const oOdds = analysis.bookmakerOdds['OVER_2_5'];
+        if (oOdds >= 1.40 && oOdds <= 3.50 && primaryMarket !== 'OVER_2_5') {
           candidates.push({
             analysis,
             market: 'OVER_2_5',
@@ -127,12 +118,9 @@ export class TipsService {
         }
       }
 
-      if (analysis.expectedTotalGoals <= 2.20) {
-        let uOdds = analysis.bookmakerOdds['UNDER_2_5'];
-        if (!uOdds || uOdds < 1.40 || uOdds > 3.00) {
-          uOdds = Math.min(ODD_MAX, Math.max(ODD_MIN, Math.round((2.00 - (2.20 - analysis.expectedTotalGoals) * 0.2) * 100) / 100));
-        }
-        if (uOdds >= ODD_MIN && uOdds <= ODD_MAX && primaryMarket !== 'UNDER_2_5') {
+      if (analysis.expectedTotalGoals <= 2.25 && analysis.bookmakerOdds['UNDER_2_5']) {
+        const uOdds = analysis.bookmakerOdds['UNDER_2_5'];
+        if (uOdds >= 1.40 && uOdds <= 3.50 && primaryMarket !== 'UNDER_2_5') {
           candidates.push({
             analysis,
             market: 'UNDER_2_5',
@@ -142,10 +130,24 @@ export class TipsService {
           });
         }
       }
+
+      // 3. Both Teams To Score (BTTS) with real bookmaker odds
+      if (analysis.expectedTotalGoals >= 2.70 && analysis.bookmakerOdds['BTTS_YES']) {
+        const bOdds = analysis.bookmakerOdds['BTTS_YES'];
+        if (bOdds >= 1.50 && bOdds <= 2.60 && primaryMarket !== 'BTTS_YES') {
+          candidates.push({
+            analysis,
+            market: 'BTTS_YES',
+            prediction: 'Both Teams To Score',
+            odds: bOdds,
+            confidence: Math.min(88, analysis.totalScore * 0.80 + 15),
+          });
+        }
+      }
     }
 
     if (candidates.length === 0) {
-      this.logger.warn('No matches where our prediction aligns with 1.65-2.20 odds');
+      this.logger.warn('No matches found with live bookmaker odds matching analytical criteria');
       return [];
     }
 
