@@ -364,7 +364,7 @@ export class TipsService {
 
   /**
    * Get Active / Today's tips for the Tips page.
-   * NOTE: Tips are generated exclusively by the 06:00 UTC cron and onModuleInit.
+   * NOTE: Tips are generated exclusively by the 00:05 UTC cron and onModuleInit.
    * This method only reads from the DB — it never triggers generation or settlement.
    */
   async getTodayTips(): Promise<Tip[]> {
@@ -381,7 +381,7 @@ export class TipsService {
     });
 
     if (todayTips.length === 0) {
-      this.logger.warn(`No tips found for ${todayStr} — generation runs at 06:00 UTC via cron.`);
+      this.logger.warn(`No tips found for ${todayStr} — generation runs at 00:05 UTC via cron.`);
     }
 
     return todayTips || [];
